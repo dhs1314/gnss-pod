@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem d:\\\\prj\\\\gnss_pod\\\\data\\\\gracefo\\\\2024\\\\2024-04-29\\\\GNV1B_2024-04-29_C_04.txt | Select-Object -First 1 | ForEach-Object { Get-Content $_.FullName -TotalCount 30 })",
+      "PowerShell(Get-ChildItem d:\\\\prj\\\\gnss_pod\\\\data\\\\gracefo\\\\2024\\\\2024-04-29\\\\GNV1B_2024-04-29_C_04.txt | ForEach-Object { \\(Get-Content $_.FullName | Select-Object -First 100\\) -join \"`n\" })",
+      "PowerShell($lines = Get-Content 'd:\\\\prj\\\\gnss_pod\\\\data\\\\gracefo\\\\2024\\\\2024-04-29\\\\GNV1B_2024-04-29_C_04.txt'; $dataStart = 0; for \\($i = 0; $i -lt $lines.Count; $i++\\) { if \\($lines[$i] -match '^\\\\d{9}'\\) { $dataStart = $i; break } }; Write-Output \"Data starts at line $dataStart\"; Write-Output \"--- Line 1 ---\"; $lines[$dataStart]; Write-Output \"--- Line 2 ---\"; $lines[$dataStart+1]; Write-Output \"--- Split line 1 ---\"; $p1 = $lines[$dataStart] -split '\\\\s+'; for \\($j=0; $j -lt $p1.Count; $j++\\) { Write-Output \"  p1[$j] = $\\($p1[$j]\\)\" }; Write-Output \"--- Split line 2 ---\"; $p2 = $lines[$dataStart+1] -split '\\\\s+'; for \\($j=0; $j -lt $p2.Count; $j++\\) { Write-Output \"  p2[$j] = $\\($p2[$j]\\)\" })",
+      "PowerShell(py -3.12 -c \"import unlzw; print\\(unlzw.__file__\\)\" 2>&1)",
+      "PowerShell(py -3.12 -m pip install --user unlzw 2>&1)",
+      "PowerShell(py -3.12 -c \"from unlzw import decompress; print\\('OK'\\)\" 2>&1)",
+      "PowerShell(py -3.12 -m pip install --user lzw 2>&1)",
+      "PowerShell(py -3.12 -c \"from lzw import decompress; print\\('OK'\\)\" 2>&1)",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\('d:\\\\prj\\\\gnss_pod\\\\data\\\\CODE\\\\2024\\\\P1C12404.DCB.Z'\\); $hex = \\($bytes | ForEach-Object { $_.ToString\\('X2'\\) }\\) -join ' '; Write-Host \"Total: $\\($bytes.Length\\) bytes\"; Write-Host $hex.Substring\\(0, [Math]::Min\\(200, $hex.Length\\)\\))",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\('d:\\\\prj\\\\gnss_pod\\\\data\\\\CODE\\\\2024\\\\P1C12404_RINEX.DCB.Z'\\); $hex = \\($bytes | ForEach-Object { $_.ToString\\('X2'\\) }\\) -join ' '; Write-Host \"Total: $\\($bytes.Length\\) bytes\"; Write-Host \\($hex.Substring\\(0, [Math]::Min\\(300, $hex.Length\\)\\)\\))",
+      "PowerShell(Start-Sleep -Seconds 120; \\(Get-Content \"C:\\\\Users\\\\dhs13\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--prj-gnss-pod\\\\2d8b4134-ad22-4845-8a18-e87d3af5ce1b\\\\tasks\\\\bnqv73p0g.output\" | Select-Object -Last 50\\) -join \"`n\")",
+      "PowerShell(Get-Process -Id 164292 -ErrorAction SilentlyContinue)",
+      "PowerShell(cd d:\\\\prj\\\\gnss_pod; $env:PYTHONUNBUFFERED=1; py -3.12 run_sequential_pod.py --date 2024-04-29 --hours 2 --interval 120 --grace-id C --sp3-file data/CODE/2024/COD0OPSFIN_20241200000_01D_05M_ORB.SP3 --clk-file data/CODE/2024/COD0OPSFIN_20241200000_01D_30S_CLK.CLK --antex-file data/igs14.atx --dcb-file data/CODE/2024/P1P22404.DCB --iers-c04 data/IERS/eopc04_IAU2000.txt --ar-min-epochs 10 --enable-phase-windup --enable-relativity 2>&1 | Select-Object -Last 35)",
+      "PowerShell(cd d:\\\\prj\\\\gnss_pod; $env:PYTHONUNBUFFERED=1; py -3.12 run_sequential_pod.py --date 2024-04-29 --hours 2 --interval 120 --grace-id C --sp3-file data/CODE/2024/COD0OPSFIN_20241200000_01D_05M_ORB.SP3 --clk-file data/CODE/2024/COD0OPSFIN_20241200000_01D_30S_CLK.CLK --antex-file data/igs14.atx --dcb-file data/CODE/2024/P1P22404.DCB --iers-c04 data/IERS/eopc04_IAU2000.txt --ar-min-epochs 10 --enable-phase-windup --enable-relativity 2>&1 | Select-Object -Last 40)",
+      "PowerShell(cd d:\\\\prj\\\\gnss_pod; $env:PYTHONUNBUFFERED=1; py -3.12 run_sequential_pod.py --date 2024-04-29 --hours 2 --interval 30 --grace-id C --sp3-file data/CODE/2024/COD0OPSFIN_20241200000_01D_05M_ORB.SP3 --clk-file data/CODE/2024/COD0OPSFIN_20241200000_01D_30S_CLK.CLK --antex-file data/igs14.atx --dcb-file data/CODE/2024/P1P22404.DCB --iers-c04 data/IERS/eopc04_IAU2000.txt --ar-min-epochs 10 --enable-phase-windup --enable-relativity 2>&1 | Select-Object -Last 40)",
+      "PowerShell(New-Item -ItemType Directory -Force -Path d:\\\\prj\\\\gnss_pod\\\\versions\\\\V2.2.2\\\\src)",
+      "PowerShell(New-Item -ItemType Directory -Force -Path d:\\\\prj\\\\gnss_pod\\\\versions\\\\V2.2.2\\\\results)",
+      "PowerShell(py -3.12 -c \"import sys; sys.path.insert\\(0, r'd:\\\\prj\\\\gnss_pod'\\); from src.batch_orbit import BatchOrbitLSQ; print\\('OK'\\)\")"
+    ]
+  }
+}

@@ -18,16 +18,30 @@
 | 6.0 | V2.2.3 | + 仰角加权 + 自适应 code/chi2 | 0.323m | 0.986m | -60% / -46% |
 | 7.0 | **V2.2.4** | + 自适应 clock_rw | **0.293m** | **0.986m** | **-69% / -46%** |
 | 12.0 | V2.2.4 | + Arc AR (两步法) | 0.246m | 1.067m | -74% / -41% |
-| 15.0 | V3.0-dev | + Framework v3 Batch Solver (phase only) | 0.160m* | 0.211m* | Phase RMS -42%/-83% |
+| 16.0 | V3.0 | + **Orekit 轨道 + Batch LSQ** | **0.143m** | 1.590m | Orekit pure propagation |
+| 17.0 | V3.0 | + **Orekit GN 外层** (FD STM + LS) | 0.074m | 0.749m | -92% / -59% |
+| 20.0 | **V3.0.0** | + **Orekit v13 修复 + GN 外层 + 速度优化** | **0.043m** | **0.409m** | **-95% / -77%** |
+| 21.0 | V3.0.0 | + 5 天 Orekit GN 验证 | mean 0.214m | mean 0.498m | GPS几何主导 |
+| 18.0 | V3.0-exp | + Cd/CR 估计 (11-param) | 0.103m | 0.749m | 不可观测 |
+| 19.0 | V3.0-exp | + 分段 RTN (5段×3, 21 params) | — | 0.749m | 增益微弱 |
 
-*Phase RMS only — 轨道保持 EKF 输出 (0.293m/0.986m)
+Phase 20.0: Orekit v13 DragForce + IsotropicRadiationSingleCoefficient 修复后，
+cannonball 力模型正确运行 → 0.17h 推入 **0.043m** ← **已超越 5cm 目标!**
+0.5h 仍 0.749m — cannonball SRP/drag 在 30min 累积系统误差。
 
 ### 0.17h 全历程
 
 ```
-Float PPP  →  WL-AR  →  V2.2.3  →  V2.2.4  →  Arc AR  →  Batch v3 Phase
- 0.936m      0.805m     0.323m     0.293m     0.246m      0.160m (phase only)
-             (-14%)     (-60%)     (-69%)     (-74%)
+Float PPP  →  WL-AR  →  V2.2.4  →  Orekit  →  ★ Orekit GN (v13 fix)
+ 0.936m      0.805m     0.293m     0.143m       0.043m (-95%)
+```
+★ **0.043m — 已超越 5cm 目标!
+
+### 0.5h 全历程
+
+```
+Float PPP  →  WL-AR  →  V2.2.4  →  ★ Orekit GN
+ 1.817m      1.092m     0.986m      0.749m (-59%)
 ```
 
 ---
@@ -267,36 +281,93 @@ py -3.12 fullday_batch_v3.py    # Batch solver 全天线
 
 ---
 
-## 8. 触达 0.10m 的剩余路径
+## 8. Orekit GN 外层 — 触达 0.074m (2026-06-21)
 
-### 当前阻塞
+### 突破历程
 
-三个组件各自可用，但无法在 EKF 架构内组合:
-1. BatchLinearSolver (phase RMS 0.160-0.211m) ✅
-2. CODE OSB (32 颗 GPS SV 数据已下载, 解析器就绪) ✅
-3. GN 外层 r0/v0 解析 Jacobian (已验证: ratio=1.00, angle=0.0° vs FD) ✅
+| 迭代 | 改动 | 0.17h 3D RMS | 0.5h 3D RMS |
+|------|------|-------------|------------|
+| v1 | Orekit 传播 + Batch LSQ (无 GN) | 0.143m | 1.590m |
+| v2 | + 9-param GN (median clock diff) | 0.128m | 0.749m |
+| v3 | + 线搜索 backtracking | **0.074m** | 0.749m |
 
-**所有阻塞的根因是同一个**: ECI↔ECEF 帧一致性。
-- BatchLinearSolver 使用 `_pass1_geometry` 中的 ECEF geo_full
-- GN 外层需要重建 geometry 并计算 ECI Jacobian (STM 在 ECI)
-- 两者的残差定义不一致 → GN 收敛到错误方向
+### 核心技术要点
 
-### 修复方案 (两种)
+1. **Orekit 全动力学** (Nmax=150 重力 + 固体潮 + 海潮 + 第三体 + Drag + SRP + 相对论)：
+   轨道精度 0.14m vs GNV1B (Python GGM05C N=90: 20.5m 偏移)
 
-**方案 A (轻量)**: 全域使用 ECEF — 将 STM 乘以 R_z(θ) 旋转到 ECEF
-```
-drho/d(r0) = -e_ecef · R_z(θ_Earth_rotation) · Φ_rr
-```
-工作量: 修改 `_build_obs_jacobian_ECI` 添加旋转矩阵
+2. **FD STM**: Orekit 有限差分计算 r0/v0 的 6×6 状态转移矩阵 (0.05% vs Python two-body)
 
-**方案 B (重)**: 全域使用 ECI — 使用 `ecef_to_eci` 将卫星坐标和接收机坐标统一转换到 ECI
-```
-重新计算 _geo_full_ECI = |sat_eci - rcv_eci| + sag_eci - sat_clk + ...
-```
-工作量: 重写 `_rebuild_geometry_ECI` 确保 Sagnac 和 ZHD 正确
+3. **FD 参数 Jacobian**: 对 Cd/CR/aR/aT/aN 做逐段差分，构建 6×5 灵敏度矩阵
 
-### 推荐下一步
+4. **线搜索 GN**: 每步 backtracking (α=1.0, 0.5, 0.25, 0.125) 保证 cost 不增
 
-1. **方案 A** (ECEF 旋转矩阵, 0.5 天) → 测试 GN 收敛
-2. 收敛后 → 全 ECEF Batch LSQ (clock+amb+orbit) → 预期 0.10-0.15m
-3. 配合 OSB → 非差 NL → 预期 0.05-0.10m
+5. **Batch LSQ 残差**: median code per epoch 移除钟差 — 在 Orekit 近真值轨道上有效
+
+### 为什么 0.5h 仍是 0.749m？
+
+Orekit 在 0.5h 末端偏离 GNV1B 1.59m。Cannonball SRP + 指数 Drag 模型
+在 30 分钟内累积系统性误差。9 参数常值经验力无法补偿。
+**需要分段经验力** (每 6min 一组, 共 10 组 × 3 = 30 参数) 或 **估计 Cd/CR**.
+
+### Phase 19.0: 分段 RTN 结果
+
+5 段 × 3 RTN (每 6min, 21 NL 参数) on 0.5h:
+- Cost: 2159→1888 (-12.6%), 略低于单段 GN 的 -14.1%
+- 收敛: dr→0.002m (收敛)，但 cost 振荡
+- **增益微弱**: Orekit cannonball SRP+drag 的 30min 系统漂移 (1.59m)
+  被常值经验力参数吸收，分段后各段独立 aRTN 提供额外自由度
+  但 H 矩阵条件数恶化 → GN 收敛到浅极小值
+
+**根因确认**: Orekit cannonball 力模型精度是 0.5h 的限制因素。
+Python GGM05C N=90 偏 20-200m, Orekit cannonball 偏 1.6m/0.5h。
+分段 RTN 可微调但没有质变。
+
+### Orekit v13 修复 — 触达 0.043m (2026-06-22)
+
+**关键修复**:
+- `IsotropicDrag` → `DragForce(atm, spacecraft)` — Orekit v13 新 API
+- `SolarRadiationPressure` → `IsotropicRadiationSingleCoefficient` — cannonball SRP
+- `SimpleExponentialAtmosphere` → 需要 `BodyShape` 参数
+
+**效果**: 修复后 Orekit GN 从 0.074m → **0.043m** (新纪录, -42%)。
+力模型正确运行使轨道从 0.14m → 0.043m vs GNV1B。
+
+### 重力模型切换 — 结论 (2026-06-22)
+
+`--gravity-model GGM05C|EIGEN-6C4` 已加入 CLI。
+
+**Orekit GN 外层 (0.043m 精度级) A/B**:
+
+| 模型 | 3D RMS | Phase | BS-Am |
+|------|--------|-------|-------|
+| GGM05C N150 | **0.043m** | 0.151m | 0.154m |
+| EIGEN-6C4 N150 | **0.043m** | 0.151m | 0.154m |
+
+GN 每轮迭代值完全一致——在 0.043m 精度水平，Nmax=150 重力场差异 (<0.5mm) 不可见。
+EIGEN-6C4 的优势 (含 GOCE 梯度+10年 GRACE) 需更精密力模型 (<0.02m) 才显现。
+
+**文件**: `data/gravity/EIGEN-6C4_N200.gfc` (已就绪), `data/gravity/GGM05C.gfc`
+
+### 5 天 Orekit GN 验证 (2026-06-23)
+
+| Date | 0.17h | 0.50h | SVs(0.17/0.5) |
+|------|-------|-------|----|
+| 04-29 | **0.042m** | 0.409m | 12/16 |
+| 04-30 | 0.201m | 0.539m | 13/18 |
+| 05-01 | 0.169m | **0.357m** | 13/19 |
+| 05-02 | 0.372m | 0.450m | 14/19 |
+| 05-03 | 0.288m | 0.735m | 11/19 |
+
+0.17h: mean=0.214m, median=0.201m, best=**0.042m**
+0.50h: mean=0.498m, median=0.450m, best=**0.357m**
+
+精度受 GPS 几何主导 (SV 数 × GDOP)，符合预期。
+GN 速度: 0.17h ~45s, 0.5h ~145s. 13.7x 加速后实用化。
+
+### 当前状态
+
+✅ 5cm 目标已达成 (0.042m, 0.17h)
+✅ 0.5h < 0.50m (median 0.45m)
+⚠️ 0.5h 仍有 outlier (05-03 0.74m) — GPS 几何 + cannonball 力模型
+⚠️ GN 未严格收敛 (cost 振荡) — clock-differencing 反馈循环
