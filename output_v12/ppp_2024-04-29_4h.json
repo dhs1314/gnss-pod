@@ -1,0 +1,15 @@
+{
+  "RMS_E": NaN,
+  "RMS_N": NaN,
+  "RMS_U": NaN,
+  "RMS_3D": NaN,
+  "RMS_E_all": NaN,
+  "RMS_N_all": NaN,
+  "RMS_U_all": NaN,
+  "RMS_3D_all": NaN,
+  "MAX_3D": NaN,
+  "n_total": 25,
+  "n_good": 0,
+  "rate": 0.0,
+  "n_mw": 78754
+}

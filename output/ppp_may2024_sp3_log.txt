@@ -1,0 +1,275 @@
+/usr/lib/python3/dist-packages/numpy/core/fromnumeric.py:3464: RuntimeWarning: Mean of empty slice.
+  return _methods._mean(a, axis=axis, dtype=dtype,
+/usr/lib/python3/dist-packages/numpy/core/_methods.py:192: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/usr/lib/python3/dist-packages/numpy/core/_methods.py:269: RuntimeWarning: Degrees of freedom <= 0 for slice
+  ret = _var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3/dist-packages/numpy/core/_methods.py:226: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3/dist-packages/numpy/core/_methods.py:261: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+
+[06:08:05] === 2024-05-01 [SP3] ===
+  [缓存] 2024-05-01
+  轨道: 86388 epochs
+  加载 WHU SP3 (DOY 122)...
+  下载 WHU SP3: whug2312122.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:06] === 2024-05-02 [SP3] ===
+  [缓存] 2024-05-02
+  轨道: 86368 epochs
+  加载 WHU SP3 (DOY 123)...
+  下载 WHU SP3: whug2312123.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:06] === 2024-05-03 [SP3] ===
+  [缓存] 2024-05-03
+  轨道: 86386 epochs
+  加载 WHU SP3 (DOY 124)...
+  下载 WHU SP3: whug2312124.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:07] === 2024-05-04 [SP3] ===
+  [缓存] 2024-05-04
+  轨道: 86354 epochs
+  加载 WHU SP3 (DOY 125)...
+  下载 WHU SP3: whug2312125.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:07] === 2024-05-05 [SP3] ===
+  [缓存] 2024-05-05
+  轨道: 86386 epochs
+  加载 WHU SP3 (DOY 126)...
+  下载 WHU SP3: whug2313126.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:08] === 2024-05-06 [SP3] ===
+  [缓存] 2024-05-06
+  轨道: 86354 epochs
+  加载 WHU SP3 (DOY 127)...
+  下载 WHU SP3: whug2313127.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:08] === 2024-05-07 [SP3] ===
+  [缓存] 2024-05-07
+  轨道: 86385 epochs
+  加载 WHU SP3 (DOY 128)...
+  下载 WHU SP3: whug2313128.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:08] === 2024-05-08 [SP3] ===
+  [缓存] 2024-05-08
+  轨道: 86380 epochs
+  加载 WHU SP3 (DOY 129)...
+  下载 WHU SP3: whug2313129.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:09] === 2024-05-09 [SP3] ===
+  [缓存] 2024-05-09
+  轨道: 86384 epochs
+  加载 WHU SP3 (DOY 130)...
+  下载 WHU SP3: whug2313130.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:09] === 2024-05-10 [SP3] ===
+  [缓存] 2024-05-10
+  轨道: 86373 epochs
+  加载 WHU SP3 (DOY 131)...
+  下载 WHU SP3: whug2313131.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:10] === 2024-05-11 [SP3] ===
+  [缓存] 2024-05-11
+  轨道: 86360 epochs
+  加载 WHU SP3 (DOY 132)...
+  下载 WHU SP3: whug2313132.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:10] === 2024-05-12 [SP3] ===
+  [缓存] 2024-05-12
+  轨道: 86366 epochs
+  加载 WHU SP3 (DOY 133)...
+  下载 WHU SP3: whug2314133.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:10] === 2024-05-13 [SP3] ===
+  [缓存] 2024-05-13
+  轨道: 86373 epochs
+  加载 WHU SP3 (DOY 134)...
+  下载 WHU SP3: whug2314134.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:11] === 2024-05-14 [SP3] ===
+  [缓存] 2024-05-14
+  轨道: 86382 epochs
+  加载 WHU SP3 (DOY 135)...
+  下载 WHU SP3: whug2314135.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:11] === 2024-05-15 [SP3] ===
+  [缓存] 2024-05-15
+  轨道: 86375 epochs
+  加载 WHU SP3 (DOY 136)...
+  下载 WHU SP3: whug2314136.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:11] === 2024-05-16 [SP3] ===
+  [缓存] 2024-05-16
+  轨道: 86385 epochs
+  加载 WHU SP3 (DOY 137)...
+  下载 WHU SP3: whug2314137.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:12] === 2024-05-17 [SP3] ===
+  [缓存] 2024-05-17
+  轨道: 86373 epochs
+  加载 WHU SP3 (DOY 138)...
+  下载 WHU SP3: whug2314138.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:12] === 2024-05-18 [SP3] ===
+  [缓存] 2024-05-18
+  轨道: 86387 epochs
+  加载 WHU SP3 (DOY 139)...
+  下载 WHU SP3: whug2314139.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:13] === 2024-05-19 [SP3] ===
+  [缓存] 2024-05-19
+  轨道: 86359 epochs
+  加载 WHU SP3 (DOY 140)...
+  下载 WHU SP3: whug2315140.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:13] === 2024-05-20 [SP3] ===
+  [缓存] 2024-05-20
+  轨道: 86382 epochs
+  加载 WHU SP3 (DOY 141)...
+  下载 WHU SP3: whug2315141.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:13] === 2024-05-21 [SP3] ===
+  [缓存] 2024-05-21
+  轨道: 86278 epochs
+  加载 WHU SP3 (DOY 142)...
+  下载 WHU SP3: whug2315142.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:14] === 2024-05-22 [SP3] ===
+  [缓存] 2024-05-22
+  轨道: 86387 epochs
+  加载 WHU SP3 (DOY 143)...
+  下载 WHU SP3: whug2315143.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:14] === 2024-05-23 [SP3] ===
+  [缓存] 2024-05-23
+  轨道: 86377 epochs
+  加载 WHU SP3 (DOY 144)...
+  下载 WHU SP3: whug2315144.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:15] === 2024-05-24 [SP3] ===
+  [缓存] 2024-05-24
+  轨道: 86386 epochs
+  加载 WHU SP3 (DOY 145)...
+  下载 WHU SP3: whug2315145.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:15] === 2024-05-25 [SP3] ===
+  [缓存] 2024-05-25
+  轨道: 86379 epochs
+  加载 WHU SP3 (DOY 146)...
+  下载 WHU SP3: whug2315146.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:15] === 2024-05-26 [SP3] ===
+  [缓存] 2024-05-26
+  轨道: 86365 epochs
+  加载 WHU SP3 (DOY 147)...
+  下载 WHU SP3: whug2316147.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:16] === 2024-05-27 [SP3] ===
+  [缓存] 2024-05-27
+  轨道: 86367 epochs
+  加载 WHU SP3 (DOY 148)...
+  下载 WHU SP3: whug2316148.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:16] === 2024-05-28 [SP3] ===
+  [缓存] 2024-05-28
+  轨道: 86370 epochs
+  加载 WHU SP3 (DOY 149)...
+  下载 WHU SP3: whug2316149.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:17] === 2024-05-29 [SP3] ===
+  [缓存] 2024-05-29
+  轨道: 86389 epochs
+  加载 WHU SP3 (DOY 150)...
+  下载 WHU SP3: whug2316150.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:17] === 2024-05-30 [SP3] ===
+  [缓存] 2024-05-30
+  轨道: 86378 epochs
+  加载 WHU SP3 (DOY 151)...
+  下载 WHU SP3: whug2316151.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+[06:08:17] === 2024-05-31 [SP3] ===
+  [缓存] 2024-05-31
+  轨道: 86387 epochs
+  加载 WHU SP3 (DOY 152)...
+  下载 WHU SP3: whug2316152.sp3.gz
+  [错误] SP3 下载: HTTP Error 404: Not Found
+  [错误] SP3 加载失败
+
+============================================================
+MAY 2024 — WHU ultra-rapid SP3 精密星历验证结果
+============================================================
+日期              E(cm)    N(cm)    U(cm)   3D(cm)       有效历元
+------------------------------------------------------------
+
+失败: 2024-05-01, 2024-05-02, 2024-05-03, 2024-05-04, 2024-05-05, 2024-05-06, 2024-05-07, 2024-05-08, 2024-05-09, 2024-05-10, 2024-05-11, 2024-05-12, 2024-05-13, 2024-05-14, 2024-05-15, 2024-05-16, 2024-05-17, 2024-05-18, 2024-05-19, 2024-05-20, 2024-05-21, 2024-05-22, 2024-05-23, 2024-05-24, 2024-05-25, 2024-05-26, 2024-05-27, 2024-05-28, 2024-05-29, 2024-05-30, 2024-05-31
+
+月均值: E=nan±nancm  N=nan±nancm  U=nan±nancm  3D=nan±nancm
+Traceback (most recent call last):
+  File "/workspace/gnss_pod/ppp_may2024_sp3.py", line 263, in <module>
+    main()
+  File "/workspace/gnss_pod/ppp_may2024_sp3.py", line 224, in main
+    print(f"3D范围: {min(r3_all):.2f} ~ {max(r3_all):.2f} cm")
+                   ^^^^^^^^^^^
+ValueError: min() arg is an empty sequence
