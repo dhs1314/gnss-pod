@@ -301,18 +301,15 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
 
     t_ep = np.array([(g - epochs[0]) for g in epochs], dtype=float)
     mjd_s = MJD0 + epochs[0] / SEC; mjd_tt = mjd_s + 69.184 / SEC
-    r0e, v0e = interpolate_ref(ref, epochs[0]), interpolate_ref(refv, epochs[0])
-    if r0e is None or v0e is None: return None
     r0i, v0i = ecef_to_eci(r0e, v0e, mjd_s)
 
     # Per-SV code bias
     N_BIAS = min(60, len(epochs))
     sv_p_res = {}
 
-    # Build receiver position lookup from code_orbit or GNV1B
+    # Build receiver position/velocity lookup from code_orbit or GNV1B
     def _get_rcv_pos(gps_sod):
         if code_orbit is not None:
-            # Interpolate from code-only orbit
             try:
                 idx0 = np.searchsorted(code_epochs, gps_sod)
                 if idx0 == 0: return code_orbit['r_ecef'][0]
@@ -323,6 +320,20 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
             except: return None
         elif ref is not None:
             return interpolate_ref(ref, gps_sod)
+        return None
+
+    def _get_rcv_vel(gps_sod):
+        if code_orbit is not None and 'v_ecef' in code_orbit:
+            try:
+                idx0 = np.searchsorted(code_epochs, gps_sod)
+                if idx0 == 0: return code_orbit['v_ecef'][0]
+                if idx0 >= len(code_epochs): return code_orbit['v_ecef'][-1]
+                t0, t1 = code_epochs[idx0-1], code_epochs[idx0]
+                dt = (gps_sod - t0) / max(t1 - t0, 1e-6)
+                return code_orbit['v_ecef'][idx0-1] * (1-dt) + code_orbit['v_ecef'][idx0] * dt
+            except: return None
+        elif refv is not None:
+            return interpolate_ref(refv, gps_sod)
         return None
 
     for gps_sod in epochs[:N_BIAS]:
@@ -506,15 +517,19 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
     dt_gn = time.time() - t0
     n_arc_nl = sol.get('n_arc_nl', 0)
 
-    # 3D RMS (vs GNV1B if available, otherwise vs code-orbit internal consistency)
-    dr_vals = []
+    # 3D position + velocity RMS
+    dr_vals = []; dv_vals = []
     for i_ep, gps_sod in enumerate(epochs):
         r_ref = _get_rcv_pos(gps_sod)
+        v_ref = _get_rcv_vel(gps_sod)
         if r_ref is not None:
             mjd_u = MJD0 + gps_sod / SEC
-            r_e, _ = eci_to_ecef(sol['r_eci'][i_ep], sol['v_eci'][i_ep], mjd_u)
+            r_e, v_e = eci_to_ecef(sol['r_eci'][i_ep], sol['v_eci'][i_ep], mjd_u)
             dr_vals.append(np.linalg.norm(r_e - r_ref))
+            if v_ref is not None:
+                dv_vals.append(np.linalg.norm(v_e - v_ref))
     rms_3d = np.sqrt(np.mean([d**2 for d in dr_vals])) if dr_vals else 0
+    rms_3v = np.sqrt(np.mean([d**2 for d in dv_vals])) if dv_vals else 0
 
     # QC report (now with real batch_phase_rms)
     cov_pcts = [v['pct'] for v in cov_stats.values()]
@@ -533,7 +548,8 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
 
     return {
         'date': date_str, 'arc_h': arc_h,
-        'rms_3d': rms_3d, 'phase_ekf': ekf_phase,
+        'rms_3d': rms_3d, 'rms_3v': rms_3v,
+        'phase_ekf': ekf_phase,
         'phase_batch': batch_ph, 'phase_gn': sol['rms_phase'],
         'converged': sol['converged'], 'iterations': sol['iterations'],
         'n_sv': n_sv, 'time_gn': dt_gn,
@@ -560,7 +576,8 @@ for date_str in DATES:
                 if r.get('skip'):
                     print(f"SKIP cov={r.get('avg_cov',0)*100:.0f}% SV={r['n_sv']}")
                 else:
-                    print(f"3D={r['rms_3d']:.3f}m GN_ph={r['phase_gn']:.3f}m "
+                    print(f"3D={r['rms_3d']:.3f}m 3V={r.get('rms_3v',0)*1000:.1f}mm/s "
+                          f"GN_ph={r['phase_gn']:.3f}m "
                           f"t={r['time_gn']:.0f}s SV={r['n_sv']} "
                           f"QC={r['qc_score']:.2f} cov={r.get('avg_cov',0)*100:.0f}%")
             else:
@@ -586,16 +603,21 @@ for arc_h in ARC_HOURS:
           f"best={np.min(rms_v):.3f}m worst={np.max(rms_v):.3f}m")
 
 # Table
-print(f"\n{'Date':<12s} {'Arc':>6s} {'3D_RMS':>8s} {'GN_Ph':>7s} {'Bch_Ph':>7s} "
-      f"{'EKF_Ph':>7s} {'QC':>5s} {'Cov':>5s} {'SVs':>4s} {'Time':>6s} {'Flags':>s}")
+vel_ms = [r.get('rms_3v',0)*1000 for r in all_results if r.get('rms_3v',0) > 0]
+print(f"\n{'Date':<12s} {'Arc':>6s} {'3D_RMS':>8s} {'3V_RMS':>9s} {'GN_Ph':>7s} {'Bch_Ph':>7s} "
+      f"{'QC':>5s} {'Cov':>5s} {'SVs':>4s} {'Time':>6s} {'Flags':>s}")
 for r in all_results:
     qc_str = f"{r.get('qc_score', 0):.2f}{r.get('qc_grade', '?')}"
     cov_str = f"{r.get('avg_cov', 0)*100:.0f}%"
+    v_str = f"{r.get('rms_3v', 0)*1000:.1f}mm/s" if r.get('rms_3v', 0) > 0 else "N/A"
     flag_str = r.get('qc_flags', '')
     skip_tag = "SKIP " if r.get('skip') else ""
-    print(f"{r['date']:<12s} {r['arc_h']:5.2f}h {r['rms_3d']:8.3f} {r['phase_gn']:7.3f} "
-          f"{r['phase_batch']:7.3f} {r['phase_ekf']:7.3f} {qc_str:>5s} {cov_str:>5s} "
+    print(f"{r['date']:<12s} {r['arc_h']:5.2f}h {r['rms_3d']:8.3f} {v_str:>9s} {r['phase_gn']:7.3f} "
+          f"{r['phase_batch']:7.3f} {qc_str:>5s} {cov_str:>5s} "
           f"{skip_tag}{r['n_sv']:>4d} {r['time_gn']:5.0f}s {flag_str}")
+if vel_ms:
+    print(f"\nVelocity RMS: mean={np.mean(vel_ms):.1f}mm/s median={np.median(vel_ms):.1f}mm/s "
+          f"best={np.min(vel_ms):.1f}mm/s worst={np.max(vel_ms):.1f}mm/s")
 
 # ---- Plot: 3 panels side-by-side ----
 fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 6))
@@ -604,20 +626,21 @@ all_dates_sorted = sorted(set(r['date'] for r in all_results))
 date_labels = [d[5:] for d in all_dates_sorted]
 x_dates = np.arange(len(all_dates_sorted))
 
-rms_017=[]; rms_050=[]; gn_017=[]; gn_050=[]; bch_017=[]; bch_050=[]
+rms_017=[]; rms_050=[]; v017=[]; v050=[]; gn_017=[]; gn_050=[]; bch_017=[]; bch_050=[]
 qc_017=[]; qc_050=[]; cov_017=[]; cov_050=[]; fc_017=[]; fc_050=[]
 
 for d in all_dates_sorted:
-    for ah, rms_l,gn_l,bch_l,qc_l,cov_l,fc_l in [
-        (0.17,rms_017,gn_017,bch_017,qc_017,cov_017,fc_017),
-        (0.50,rms_050,gn_050,bch_050,qc_050,cov_050,fc_050)]:
+    for ah, rms_l,gn_l,bch_l,qc_l,cov_l,fc_l,v_l in [
+        (0.17,rms_017,gn_017,bch_017,qc_017,cov_017,fc_017,v017),
+        (0.50,rms_050,gn_050,bch_050,qc_050,cov_050,fc_050,v050)]:
         m=[r for r in all_results if r['date']==d and abs(r['arc_h']-ah)<0.01]
         if m:
             r=m[0]; rms_l.append(r['rms_3d']); gn_l.append(r['phase_gn'])
             bch_l.append(r['phase_batch']); qc_l.append(r.get('qc_score',0))
             cov_l.append(r.get('avg_cov',0)*100); fc_l.append(r.get('n_full_cov',0))
+            v_l.append(r.get('rms_3v',0)*1000)  # mm/s
         else:
-            for L in [rms_l,gn_l,bch_l,qc_l,cov_l,fc_l]: L.append(np.nan)
+            for L in [rms_l,gn_l,bch_l,qc_l,cov_l,fc_l,v_l]: L.append(np.nan)
 
 # Panel (a): 3D RMS curves
 ax1.plot(x_dates, rms_017, 'o-', color='#607D8B', lw=2, ms=8,
@@ -632,9 +655,22 @@ for xi, yi, qi in zip(x_dates, rms_017, qc_017):
 for xi, yi, qi in zip(x_dates, rms_050, qc_050):
     if not np.isnan(yi): ax1.annotate(f'QC{qi:.2f}', (xi,yi), textcoords='offset points',
         xytext=(0,-16), ha='center', fontsize=6.5, color='#FF9800', fontweight='bold')
+# Velocity RMS (secondary y-axis, right)
+ax1v = ax1.twinx()
+ax1v.plot(x_dates, v017, '^--', color='#4CAF50', lw=1.2, ms=6, alpha=0.7,
+          label='0.17h 3V RMS')
+ax1v.plot(x_dates, v050, 'v--', color='#FF5722', lw=1.2, ms=6, alpha=0.7,
+          label='0.50h 3V RMS')
+ax1v.set_ylabel('3V RMS [mm/s]', fontsize=10, color='#666666')
+ax1v.tick_params(axis='y', labelcolor='#666666')
+
 ax1.set_ylabel('3D RMS [m]', fontsize=12)
-ax1.set_title('(a) 3D Positioning Accuracy' + (' [BRDC SIM]' if USE_BROADCAST else ''), fontsize=13, fontweight='bold')
-ax1.legend(fontsize=8, loc='upper left'); ax1.grid(True, alpha=0.3)
+ax1.set_title('(a) 3D Position + Velocity Accuracy' + (' [BRDC SIM]' if USE_BROADCAST else ''), fontsize=13, fontweight='bold')
+# Combine legends
+lines1, labels1 = ax1.get_legend_handles_labels()
+lines2, labels2 = ax1v.get_legend_handles_labels()
+ax1.legend(lines1+lines2, labels1+labels2, fontsize=7, loc='upper left', ncol=2)
+ax1.grid(True, alpha=0.3)
 ax1.set_xticks(x_dates); ax1.set_xticklabels(date_labels, fontsize=9); ax1.set_ylim(bottom=0)
 
 # Panel (b): Phase RMS
