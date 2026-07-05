@@ -192,9 +192,29 @@ class NavReader:
             parts=line.split()
             if len(parts)<8: i+=1; continue
             try:
-                yr=int(parts[0]); mo=int(parts[1]); dy=int(parts[2])
-                hr=int(parts[3]); mn=int(parts[4]); sc=float(parts[5])
-                sv=parts[6]
+                # Auto-detect RINEX nav format:
+                # Standard format: PRN YR MO DY HR MN SC ... (parts[0]=PRN, e.g. 1 or G01)
+                # Alternate format: YR MO DY HR MN SC SV ... (parts[0]=YR)
+                # PRN is 1-2 digits (1-32) or G01-G32, never looks like 2-digit year
+                p0 = parts[0]
+                is_prn_first = (p0.startswith('G') or p0.startswith('R') or
+                                p0.startswith('E') or
+                                (p0.isdigit() and len(p0) <= 2 and int(p0) <= 40))
+                if is_prn_first:
+                    sv_raw = p0
+                    yr=int(parts[1]); mo=int(parts[2]); dy=int(parts[3])
+                    hr=int(parts[4]); mn=int(parts[5]); sc=float(parts[6])
+                else:
+                    yr=int(parts[0]); mo=int(parts[1]); dy=int(parts[2])
+                    hr=int(parts[3]); mn=int(parts[4]); sc=float(parts[5])
+                    sv_raw=parts[6]
+                # Normalize SV name: '1' -> 'G01', 'G1' -> 'G01'
+                if sv_raw.isdigit():
+                    sv = f'G{int(sv_raw):02d}'
+                elif len(sv_raw) == 2 and sv_raw[0] == 'G' and sv_raw[1].isdigit():
+                    sv = f'G0{sv_raw[1]}' if len(sv_raw)==2 else sv_raw
+                else:
+                    sv = sv_raw
                 if yr<80: yr+=2000
                 elif yr<100: yr+=1900
                 epoch=datetime(yr,mo,dy,hr,mn,int(sc))

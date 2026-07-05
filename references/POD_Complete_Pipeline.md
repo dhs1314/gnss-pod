@@ -1,504 +1,272 @@
-# GRACE-FO 精密定轨 (POD) 完整处理流程
+# GRACE-FO PPP-AR POD: 输入输出规范与软件架构 (V3.2)
 
-## 目标：LEO 卫星轨道精度 ≤ 5 cm (3D RMS)
+## 1. 软件架构
+
+```
+                           +----------------------------+
+                           |         CLI                |
+                           |  eval_5day_orekit.py       |
+                           |  run_sequential_pod.py     |
+                           +------------+---------------+
+                                        |
+               +------------------------+------------------------+
+               |                        |                        |
+               v                        v                        v
+     +------------------+   +--------------------+   +--------------------+
+     | (1) 数据加载层    |   | (2) 算法核心层      |   | (3) 输出与验证层    |
+     |                  |   |                    |   |                    |
+     | GPS 观测加载      |   | EKF 序贯滤波       |   | 3D/3V RMS 统计     |
+     | GPS 轨道/钟差     |   | Batch 线性求解     |   | 精度图表 (PNG)      |
+     | 天线/DCB/EOP     |   | Orekit GN 外层     |   | 结果存档 (PKL)      |
+     | 广播/精密可选     |   | 模糊度固定 (WL/NL)  |   | QC 质量报告        |
+     | 重力场模型        |   | 数据质量管理       |   |                    |
+     | 卫星宏模型参数    |   | 伪距自主初轨       |   |                    |
+     +------------------+   +--------------------+   +--------------------+
+```
+
+### 1.1 模块依赖
+
+```
+eval_5day_orekit.py
++-- src/code_orbit.py            # 伪距自主初轨
++-- src/sequential_filter.py     # EKF 序贯滤波
+|   +-- src/orbit_dynamics.py    # 力模型
+|   +-- src/orbit_integrator.py  # RK4 积分 + STM
+|   +-- src/gravity_model.py     # ICGEM 重力场
+|   +-- src/coordinates.py       # ECI-ECEF 变换
+|   +-- src/cycle_slip.py        # TurboEdit 周跳
+|   +-- src/ambiguity.py         # MW/WL/NL
+|   +-- src/measurement_corrections.py  # PCO/缠绕/相对论
+|   +-- src/troposphere.py       # 对流层
++-- src/batch_solver.py          # 批量线性求解
++-- src/batch_orbit_v3.py        # GN 精密定轨外层
+|   +-- src/orekit_bridge.py     # Orekit v13 (Java)
+|   +-- src/empirical.py         # RTN 经验力
+|   +-- src/srp.py               # 光压
+|   +-- src/third_body.py        # 第三体
+|   +-- src/solid_tides.py       # 固体潮
++-- src/data_quality.py          # 4 层 QC
++-- src/precision_products.py    # SP3/CLK/DCB/ANTEX/IERS
++-- src/sp3_loader.py            # SP3 解析
++-- src/fetch_data.py            # 广播星历
++-- src/satellite_config.py      # 卫星参数 DB
++-- src/gracefo_macro.py         # Box-wing 宏模型
++-- run_sequential_pod.py        # 单弧段入口
+
+外部依赖: orekit-jpype 13.1.5, numpy, matplotlib, jpype1, astropy
+```
 
 ---
 
-## 总览
+## 2. 输入规范
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                        POD Pipeline Overview                          │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                       │
-│  Phase 1: 数据获取                                                    │
-│    GPS1B → ACC1B → SCA1B → CLK1B → AOD1B  (GRACE-FO星上数据)         │
-│    SP3 → CLK → ERP → SINEX → ANTEX → DCB   (IGS外部产品)             │
-│                                                                       │
-│  Phase 2: 数据预处理                                                  │
-│    GPS1B二进制 → RINEX → 数据质量检查 → 粗差剔除                      │
-│    时间对齐 → 坐标系转换 → 天线相位中心校正                            │
-│                                                                       │
-│  Phase 3: 测量模型                                                    │
-│    电离层-free组合 → PCO/PCV → 相位缠绕 → 对流层改正 → 相对论        │
-│                                                                       │
-│  Phase 4: 力学模型                                                    │
-│    重力场 → 固体潮/海潮 → 第三体 → 大气阻力 → 光压 → 经验加速度       │
-│                                                                       │
-│  Phase 5: 轨道确定                                                    │
-│    初始轨道 → 浮点解 → 模糊度固定 → 固定解 → 残差编辑 → 最终解       │
-│                                                                       │
-│  Phase 6: 质量评估                                                    │
-│    轨道重叠检验 → KBR残差 → SLR检核 → 精度预算                        │
-│                                                                       │
-└──────────────────────────────────────────────────────────────────────┘
-```
+### 2.1 必选输入
+
+| 类别 | 参数 | 格式 | 说明 |
+|------|------|------|------|
+| LEO GPS 观测 | GPS1B pkl | `{gps_sod: {sv: {L1,L2,P1,P2,...}}}` | 双频载波相位+伪距 |
+| 日期范围 | `--dates` | `YYYY-MM-DD,...` | 多天批量 |
+| 弧段长度 | `--hours` | `0.17,0.50,...` | 小时 |
+| 卫星标识 | `--grace-id` | `C`/`D` 等 | satellite_config.py 中定义 |
+
+### 2.2 GPS 轨道/钟差 (二选一)
+
+| 选择 | 参数 | 格式 | 精度 |
+|------|------|------|------|
+| **精密星历** (默认) | SP3 + CLK 文件 | SP3-c 5min + RINEX CLK 30s | ~2.5cm 轨道 |
+| **广播星历** | `--broadcast` | IGS RINEX 2.11 nav -> pkl 缓存 | ~1m 轨道 |
+
+切换: `--broadcast` 自动从 `data/BRDC/` 加载预计算广播轨道.
+
+### 2.3 辅助产品
+
+| 产品 | 路径 | 用途 |
+|------|------|------|
+| DCB 码偏差 | `data/CODE/{year}/P1P2{YYMM}.DCB` | 卫星硬件延迟 |
+| ANTEX 天线 | `data/igs14.atx` | GPS PCO/PCV |
+| IERS EOP | `data/IERS/eopc04_IAU2000.txt` | 地球定向参数 |
+| OSB 偏差 (可选) | `data/CODE/{year}/*_OSB.BIA` | 非差 WL/NL 偏差 |
+
+### 2.4 卫星动力学参数
+
+通过 `src/satellite_config.py` 管理，数据库中含 11 颗 LEO 卫星:
+
+| 参数 | GRACE-FO C | 说明 |
+|------|-----------|------|
+| mass | 580.0 kg | 卫星质量 |
+| area_drag | 0.68 m^2 | 阻力截面积 |
+| area_srp | 3.4 m^2 | 光压截面积 |
+| CD | 2.2 | 阻力系数 |
+| CR | 1.3 | 光压系数 |
+
+添加新卫星只需在 SATELLITE_DB 中增加条目.
+
+### 2.5 力模型参数
+
+| 参数 | 默认值 | 可选 |
+|------|--------|------|
+| 重力场 | GGM05C Nmax=150 | EIGEN-6C4 Nmax=200 / 任意 .gfc |
+| 固体潮 | IERS 2010 | -- |
+| 海潮 | FES2004 N=50 | -- |
+| 第三体 | Sun+Moon | -- |
+| 光压 | Cannonball | Box-wing (GRACE-FO 8 面板) |
+| 阻力 | SimpleExponential | NRLMSISE00, Harris-Priester |
+| 相对论 | Schwarzschild | -- |
+
+### 2.6 EKF + 批处理参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| sigma_phase | 0.20 m | 相位噪声 (天顶) |
+| sigma_code | 0.30 m | 码噪声 (天顶) |
+| sigma_acc_process | 1e-3 m/s^2 | 未建模加速度 |
+| chi2_threshold | 25 (<0.3h) | 卡方检验 |
+| el_min | 5 deg | 高度截止角 |
+| clock_rw | 0.0004 (<0.3h) | 钟差随机游走 |
+| ar_min_epochs | 6 | MW 宽巷最少历元 |
+| GN max_iter | 6 | GN 外循环迭代 |
+| GN damping | 0.5 | Levenberg-Marquardt |
 
 ---
 
-## Phase 1: 数据获取
+## 3. 输出规范
 
-### 1.1 星上数据 (GRACE-FO, 卫星 C/D)
+### 3.1 精密轨道 (每历元)
 
-| 数据产品 | 作用 | 采样率 | 下载地址 |
-|---------|------|--------|---------|
-| **GPS1B** | GPS L1/L2 相位+伪距观测值 | 10 s | [GFZ ISDC](https://isdc-data.gfz.de/grace-fo) |
-| **ACC1B** | 非引力加速度 (三轴) | 1 s | [GFZ ISDC](https://isdc-data.gfz.de/grace-fo) |
-| **SCA1B** | 卫星姿态四元数 | 1 s | [GFZ ISDC](https://isdc-data.gfz.de/grace-fo) |
-| **CLK1B** | 接收机时钟校正 | 10 s | [GFZ ISDC](https://isdc-data.gfz.de/grace-fo) |
-| **AOD1B** | 大气/海洋去混频产品 | 3 h | [GFZ ISDC](https://isdc-data.gfz.de/grace-fo) |
+| 字段 | 格式 | 单位 |
+|------|------|------|
+| gps_sod | float | 秒 |
+| r_ecef | float[3] | 米 |
+| v_ecef | float[3] | 米/秒 |
+| r_eci | float[3] | 米 (可选) |
+| v_eci | float[3] | 米/秒 (可选) |
+| clk | float | 米 |
 
-```bash
-# 下载示例 (GFZ ISDC)
-wget -r -np -nH --cut-dirs=3 \
-  https://isdc-data.gfz.de/grace-fo/level-1b/jpl/rl03/2026/01/GPS1B_2026-01-01_C_03.dat
-wget -r -np -nH --cut-dirs=3 \
-  https://isdc-data.gfz.de/grace-fo/level-1b/jpl/rl03/2026/01/ACC1B_2026-01-01_C_03.dat
-wget -r -np -nH --cut-dirs=3 \
-  https://isdc-data.gfz.de/grace-fo/level-1b/jpl/rl03/2026/01/SCA1B_2026-01-01_C_03.dat
-```
+### 3.2 精度统计 (每弧段)
 
-### 1.2 外部精密产品 (IGS/CODE/IERS)
-
-| 数据产品 | 作用 | 精度 | 延迟 | 下载地址 |
-|---------|------|------|------|---------|
-| **IGS Final SP3** | GPS卫星精密轨道 | ~2.5 cm | 12-18 天 | [CDDIS](https://cddis.nasa.gov) |
-| **IGS Final CLK** | GPS卫星精密时钟 (30s) | ~0.02 ns | 12-18 天 | [CDDIS](https://cddis.nasa.gov) |
-| **IERS C04 ERP** | 极移 xp,yp / UT1-UTC / LOD | ~0.05 mas | 30 天 | [IERS](https://www.iers.org) |
-| **IGS SINEX** | 地面站坐标+速度 | ~2 mm | 每周 | [CDDIS](https://cddis.nasa.gov) |
-| **IGS ANTEX** | GPS卫星+地面站天线PCO/PCV | ~1 mm | 不定期 | [IGS](https://igs.org) |
-| **CODE DCB** | 差分码偏差 (P1-C1, P1-P2) | ~0.1 ns | 每月 | [CODE](http://ftp.aiub.unibe.ch) |
-
-```bash
-# IGS Final 产品文件名示例
-# 轨道: igs21234.sp3.Z
-# 时钟: igs21234.clk.Z
-# ERP:  igs21237.erp.Z
-# SINEX: igs21P2123.snx.Z
-```
-
-### 1.3 辅助数据
-
-| 数据 | 说明 |
+| 字段 | 说明 |
 |------|------|
-| **重力场模型** | EGM2008 / EIGEN-6C4 (ICGEM 格式) |
-| **海潮模型** | FES2014b (球谐系数 50阶) |
-| **LEO 天线 PCO/PCV** | GRACE-FO 在轨标定 PCV 文件 |
-| **卫星宏模型** | 质量、面积、光学属性 (用于阻力和光压建模) |
+| rms_3d | 3D 位置 RMS (m) |
+| rms_3v | 3D 速度 RMS (mm/s) |
+| phase_ekf | EKF 相位残差 RMS (m) |
+| phase_batch | Batch 相位残差 RMS (m) |
+| phase_gn | GN 外层相位残差 RMS (m) |
+| n_sv | 活跃卫星数 |
+| avg_cov | 平均覆盖率 (%) |
+| qc_score / qc_grade | 质量评分 (0-1, A-F) |
+
+### 3.3 可视化
+
+3 面板 PNG: (a) 3D+3V RMS 曲线, (b) Phase RMS 曲线, (c) 覆盖率-精度散点图.
+
+文件名: `results/{N}day_{start}_{end}[_BRDC]_orekit/{...}.png`
 
 ---
 
-## Phase 2: 数据预处理
-
-### 2.1 GPS1B 二进制 → RINEX 转换
+## 4. 处理流程
 
 ```
-GPS1B 二进制 (.dat)
-    ↓ Bin2AsciiLevel1 工具
-ASCII 观测值 + 导航电文
-    ↓ 格式重组
-RINEX 3.04 观测文件 (.rnx) + 导航文件 (.nav)
+Step 0: 运动学 WLS
+  P_if -> r_ecef (~5-10m)
+
+Step 1: 伪距 GN (--code-arc-hours)
+  P_if (长弧) + 动力学 -> 轨道表 (~0.2m)
+  异常检测: |resid| > 5m 剔除
+
+Step 2: EKF 序贯滤波
+  码(锚定钟差) -> 相位(锚定模糊度)
+  MW -> WL 固定 -> (可选) OSB NL
+  保护: TurboEdit > Chi2 > Gap > MW > 覆盖率
+
+Step 3: Batch AR + Orekit GN
+  3a: Batch 线性求解 (clk+zwd+amb)
+  3b: GN 外循环 x6
+    Orekit 传播 -> 重建几何 -> Batch -> Jacobian -> Newton + 线搜索
 ```
 
-**RINEX 3.04 观测值映射：**
+广播模式 (--broadcast): Step 3b 跳过，用 EKF 轨道评估.
 
-| GPS1B 字段 | RINEX 3 观测码 | 说明 |
-|-----------|---------------|------|
-| L1 phase (cycles) | `L1C` | L1 载波相位 |
-| L2 phase (cycles) | `L2W` | L2 载波相位 |
-| L1 pseudorange (m) | `C1C` | L1 C/A 码伪距 |
-| L2 pseudorange (m) | `C2W` | L2 P/Y 码伪距 |
+### 数据质量保护链 (8 层)
 
-### 2.2 数据时间对齐
-
-```
-GPS1B 时间标签 → CLK1B 校正 → GPS 时间
-SCA1B 姿态数据 → 线性内插到 GPS 观测历元
-ACC1B 加速度 → 降采样 + 内插到 GPS 观测历元
-IGS SP3/CLK → 内插到 GPS 观测历元 (通常用 9阶 Lagrange)
-```
-
-### 2.3 粗差剔除 & 质量检查
-
-```python
-for epoch in arc:
-    for sat in visible_sats:
-        # 1. SNR 阈值
-        if L1_SNR < 30 dB-Hz or L2_SNR < 25 dB-Hz: REJECT
-        
-        # 2. 伪距-相位一致性 (码减相位差异)
-        if abs((C1C - L1C*lambda_L1) - median_mw) > 30 m: REJECT
-        
-        # 3. 电离层变化率 (GF组合时间差分)
-        if abs(delta_GF) > 0.02 m/s: REJECT  (可能周跳)
-        
-        # 4. 仰角截止
-        if elevation < 10°: REJECT
-```
-
-### 2.4 周跳检测 (TurboEdit 算法)
-
-```
-Melbourne-Wübbena (MW) 组合:
-  MW = (L1 - L2) - (f1*P1 + f2*P2)/(f1 + f2) * (f1-f2)/c
-  
-  周跳判定: |MW - <MW>_sliding| > 4*sigma_MW
-
-Geometry-Free (GF) 组合:
-  GF = L1 - L2
-  
-  周跳判定: |delta_GF| > threshold  (时间差分跳变)
-```
+| 层 | 检查 | 阈值 | 动作 |
+|----|------|------|------|
+| 1 | 观测范围 | 15,000-35,000 km | 跳过 |
+| 2 | 高度角 | el < 5 deg | 跳过卫星 |
+| 3 | Chi2 | > 25/100 | 拒绝观测 |
+| 4 | TurboEdit | GF>0.08m, MW>4sigma | 重置 amb |
+| 5 | Gap | >2 epoch | 分裂弧段 |
+| 6 | MW | sigma>10cyc / sigma>0.30cyc | 拒绝 SV |
+| 7 | 覆盖率 | <40% | 拒绝 SV |
+| 8 | QC | <0.5 | 标记弧段 |
 
 ---
 
-## Phase 3: 测量模型
+## 5. 数据格式 (可替换接口)
 
-### 3.1 观测方程
+### 5.1 GPS1B 观测
 
-**无电离层组合 (Ionosphere-Free, IF)** — 消除一阶电离层：
-
-$$
-\Phi_{IF} = \frac{f_1^2}{f_1^2 - f_2^2}\Phi_1 - \frac{f_2^2}{f_1^2 - f_2^2}\Phi_2
-$$
-
-$$
-P_{IF} = \frac{f_1^2}{f_1^2 - f_2^2}P_1 - \frac{f_2^2}{f_1^2 - f_2^2}P_2
-$$
-
-**完整观测方程 (IF 组合)：**
-
-$$
-\begin{aligned}
-P_{IF} &= \rho_{LEO}^{GPS} + c(\delta t_r - \delta t^s) + T_{trop} + \varepsilon_P \\
-\Phi_{IF} &= \rho_{LEO}^{GPS} + c(\delta t_r - \delta t^s) + T_{trop} + \lambda_{IF} N_{IF} + \varepsilon_\Phi
-\end{aligned}
-$$
-
-### 3.2 测量改正项 (依次施加)
-
-#### 改正 1: 天线相位中心偏移 (PCO)
-
-```python
-# GPS 发射天线 PCO (从 ANTEX 文件)
-pco_gps_sat = read_antex("igs14.atx", prn, "L1", "L2")
-
-# LEO 接收天线 PCO (GRACE-FO 在轨标定值)
-pco_leo_L1 = [-0.0005, 0.0002, 0.4513]  # 示例 (m), 星固坐标系
-pco_leo_L2 = [-0.0003, 0.0001, 0.4487]
+```
+{gps_sod_int: {sv: {
+    'L1': float,   # L1 相位 [m]
+    'L2': float,   # L2 相位 [m]
+    'P1': float,   # P1 伪距 [m]
+    'P2': float,   # P2 伪距 [m]
+    'L_if': float, # IF 组合相位
+    'P_if': float, # IF 组合伪距
+    'L1_cyc': float, # L1 相位 [cycle]
+    'L2_cyc': float, # L2 相位 [cycle]
+    'L1_SNR': float, # L1 SNR [dB-Hz]
+}}
 ```
 
-#### 改正 2: 天线相位中心变化 (PCV)
+### 5.2 GPS 轨道
 
-```python
-# 在轨标定 PCV (球谐展开)
-def pcv_correction(elevation, azimuth, pcv_coeffs, max_degree=8):
-    """在轨残差 PCV 模型 (Kang et al., 2021)"""
-    corr = 0
-    for n in range(max_degree + 1):
-        for m in range(n + 1):
-            P_nm = legendre(n, m, sin(elevation))
-            corr += P_nm * (pcv_coeffs.C[n,m] * cos(m*azimuth) 
-                          + pcv_coeffs.S[n,m] * sin(m*azimuth))
-    return corr
+```
+{'ts': [datetime,...],
+ 'epochs': {datetime: {sv: [x_m, y_m, z_m, clk_m]}}}
 ```
 
-#### 改正 3: 相位缠绕 (Phase Wind-Up)
+clk_m 单位为米. 精密轨道和广播星历共用此格式.
 
-只有载波相位需要此改正：
+### 5.3 输出轨道
 
-```python
-def phase_wind_up(leo_pos, gps_pos, leo_attitude, gps_attitude):
-    """
-    Wu et al. (1993) 相位缠绕改正
-    量级: 0.5-1 周 (L1) = ~10-19 cm → 必须改正
-    """
-    # 有效偶极子方向
-    d_leo = leo_attitude_body_z  # LEO 天线方向 (朝向天顶)
-    d_gps = gps_attitude_body_z  # GPS 天线方向 (朝向地心)
-    
-    # 信号传播方向
-    k = unit_vector(gps_pos - leo_pos)
-    
-    # 有效偶极子
-    D_leo = d_leo - k * dot(k, d_leo) + cross(k, leo_attitude_y)
-    D_gps = d_gps - k * dot(k, d_gps) - cross(k, gps_attitude_y)
-    
-    # 相位缠绕角
-    phi = atan2(dot(cross(k, D_leo), D_gps), dot(D_leo, D_gps))
-    delta_phi = round((prev_phi - phi) / (2*pi))
-    return (delta_phi + phi - prev_phi) / (2*pi)  # cycles
-```
+当前为 Python pickle. 可扩展 SP3-c / CSV / RINEX 3.04.
 
-#### 改正 4: 对流层延迟
+---
 
-```python
-def troposphere_correction(leo_pos, gps_pos, epoch):
-    """
-    对流层天顶延迟 (Saastamoinen 模型) + 映射函数 (Vienna 1)
-    量级: 2-3 m (天顶) → 10-50 m (低仰角)
-    """
-    # 天顶延迟
-    zhd = saastamoinen_zhd(pressure, latitude, height)
-    zwd = ztd - zhd  # 湿延迟作为待估参数
-    
-    # 映射函数: Vienna 1 (VMF1) 或 GMF
-    mf_h = vmf1_hydrostatic(epoch, latitude, height, elevation)
-    mf_w = vmf1_wet(epoch, latitude, elevation)
-    
-    return zhd * mf_h + zwd * mf_w
-```
+## 6. 运行命令
 
-#### 改正 5: 相对论效应
+```powershell
+$env:OREKIT_DATA_PATH = 'd:\prj\gnss_pod\data\orekit'
+$env:JAVA_HOME = '...'
 
-```python
-def relativity_correction(gps_pos, gps_vel, leo_pos, leo_vel):
-    """
-    Shapiro 信号延迟 (广义相对论)
-    量级: ~2 cm (GPS→LEO)
-    """
-    R_gps = norm(gps_pos)
-    R_leo = norm(leo_pos)
-    rho   = norm(gps_pos - leo_pos)
-    
-    # Shapiro 公式
-    dt_rel = 2 * MU / c**3 * log((R_gps + R_leo + rho) 
-                                  / (R_gps + R_leo - rho))
-    return c * dt_rel  # 距离改正 (m)
-```
+# 标准精密定轨
+python eval_5day_orekit.py --dates 2024-04-29,...,2024-05-08 --hours 0.17,0.50
 
-### 3.3 GPS 卫星位置/时钟内插
+# 广播星历
+python eval_5day_orekit.py --broadcast --skip-code-orbit --dates ... --hours 0.17
 
-```python
-def interpolate_gps_orbit_clock(sp3_file, clk_file, epoch, prn):
-    """9 阶 Lagrange 内插 GPS 精密轨道和 30s 时钟"""
-    # SP3: 读取 10 个节点 (epoch 前后各 5, 间隔 900s)
-    # CLK: 读取 10 个节点 (epoch 前后各 5, 间隔 30s)
-    
-    orbit_eci = lagrange_interp_9th(sp3_positions, times, epoch)
-    clock_corr = lagrange_interp_9th(clk_values, clk_times, epoch)
-    
-    return orbit_eci, clock_corr
+# 自洽模式 (无 GNV1B)
+python eval_5day_orekit.py --code-arc-hours 1.0 --dates ... --hours 0.17
 ```
 
 ---
 
-## Phase 4: 力学模型
+## 7. 精度总览
 
-### 4.1 轨道传播方程
+| 版本 | 0.17h | 0.50h | 改进 |
+|------|-------|-------|------|
+| V2.2.4 | 0.293m | 0.986m | 自适应 clock_rw |
+| V3.0.0 | 0.043m* | 0.409m | Orekit GN |
+| V3.1.0 | 0.169m | 0.493m | QC + gap + IRLS |
+| **V3.2.0** | **0.169m** | **0.493m** | 自洽初轨 + 速度 + BRDC |
+| V3.2 BRDC | **1.355m** | -- | 真实 IGS 广播星历 |
 
-卫星运动的 Newton 方程 (ECI 惯性系):
+* 单天最优
 
-$$
-\ddot{\mathbf{r}} = -\frac{GM}{r^3}\mathbf{r} + \mathbf{a}_\text{non-spherical} + \mathbf{a}_\text{tides} + \mathbf{a}_\text{3rd-body} + \mathbf{a}_\text{drag} + \mathbf{a}_\text{srp} + \mathbf{a}_\text{rel} + \mathbf{a}_\text{emp}
-$$
+### BRDC vs CODE
 
-### 4.2 各力模型配置
-
-| 力模型 | 配置参数 | 备注 |
-|--------|---------|------|
-| 中心引力 | $GM = 398600.4415\ \text{km}^3\text{/s}^2$ | WGS84 |
-| 非球形引力 | EGM2008, 120×120 | 球谐展开 |
-| 固体潮 | IERS 2010, 频率相关 | k20=0.30190 |
-| 海潮 (FES2014b) | 50×50 | 必须加载! |
-| 极潮 | IERS 2010 | 固体极+海极 |
-| 大气/海洋去混频 | AOD1B RL06, 100×100 | STOKES 系数改正 |
-| 月球 | DE430 星历 | JPL 行星历 |
-| 太阳 | DE430 星历 | 含光压 |
-| 大气阻力 | DTM2000, Cd=1.0-1.5 | 用ACC数据约束 |
-| 太阳辐射压 | Cr=0.7-1.0, Cannonball | 含地球遮挡 |
-| 广义相对论 | Schwarzschild + 一阶 | |
-| 经验加速度 | RTN 分段常值, 15 min | σ=5×10⁻⁹ m/s² |
-
-### 4.3 ACC1B 加速度计数据处理
-
-```
-原始 ACC1B (1 Hz, 卫星固连系)
-    ↓ 1. 偏差+尺度因子校正
-    ↓ 2. 低通滤波 (cutoff ~0.1 Hz, 去除高频噪声)
-    ↓ 3. 降采样到 GPS 观测历元 (10s)
-    ↓ 4. SCA1B姿态 → 转换到 ECI
-校准后非引力加速度 (ECI)
-    ↓ 用于大气阻力/光压模型验证
-    ↓ 或直接代入轨道积分 (替代阻力+光压模型)
-```
-
-### 4.4 RTN 经验加速度配置
-
-```python
-# 经验加速度参数化
-n_intervals = int(24 * 3600 / 900)  # = 96 段/天
-
-for interval in range(n_intervals):
-    for direction in ['R', 'T', 'N']:
-        # 每个方向每段一个常值加速度
-        param = add_parameter(
-            name=f"emp_{direction}_{interval}",
-            prior_value=0.0,
-            prior_sigma={  # 先验约束
-                'R': 1e-9,   # 径向 (最弱)
-                'T': 5e-9,   # 沿轨 (最强，需要较大自由度)
-                'N': 1e-9,   # 法向
-            }[direction],
-            lower_bound=-1e-6,
-            upper_bound=+1e-6
-        )
-```
-
----
-
-## Phase 5: 轨道确定
-
-### 5.1 两阶段估计策略
-
-```
-阶段 1: 浮点解 (Float Solution)
-  ├── 伪距 + 载波相位 (iono-free 组合)
-  ├── 待估参数: 轨道初值 (6) + 经验加速度 (288) + 钟差 (每历元)
-  │               + 模糊度 (浮点, 每弧段) + 天顶湿延迟 (每2h)
-  ├── Batch LS / EKF
-  └── 输出: 浮点轨道 ~10 cm 精度
-
-阶段 2: 模糊度固定 + 固定解 (Fixed Solution)
-  ├── 从浮点解提取宽巷+窄巷模糊度
-  ├── LAMBDA 固定整数模糊度
-  ├── 重新运行 Batch LS (已固定的模糊度作为约束)
-  └── 输出: 固定轨道 ~2-3 cm 精度 ✅
-```
-
-### 5.2 模糊度固定流程 (AR)
-
-```
-输入: 浮点解 PPP 模糊度 N_float + 协方差 Q_N
-
-Step 1: 宽巷固定 (Melbourne-Wübbena)
-  N_wl = (L1 - L2) - (f1*P1 + f2*P2)/(f1+f2) * (f1-f2)/c
-  固定判定: |N_wl - round(N_wl)| < 0.25 周 AND σ_Nwl < 0.15 周
-
-Step 2: 星间单差 (消除接收机端误差)
-  SD_ambiguities = satellite_b - satellite_ref (对每个历元的模糊度差分)
-
-Step 3: LAMBDA 搜索
-  Z^T * Q_N * Z  去相关变换
-  Integer Least Squares 搜索
-  Ratio Test: R = ||N_2nd_best||^2 / ||N_best||^2 > 3.0
-
-Step 4: 部分固定 (Partial Fixing)
-  若 Ratio < 3.0: 按成功率排序, 固定高成功率模糊度子集
-
-Step 5: 约束更新
-  固定解 = 浮点解 + Q_N*inv(Q_N_fixed) * (N_fixed - N_float)
-```
-
-### 5.3 BatchLSEstimator 配置
-
-```java
-// Orekit 批最小二乘 POD 配置
-BatchLSEstimator estimator = new BatchLSEstimator(
-    optimizer,        // Levenberg-Marquardt
-    propagatorBuilder // 含全部力学模型
-);
-
-// 添加测量值 (遍历所有历元、所有可见 GPS 卫星)
-for (Observation obs : preprocessedObservations) {
-    // L1/L2 伪距 → iono-free 组合
-    Pseudorange prIF = new Pseudorange(
-        obs.epoch, obs.pr_L1, obs.pr_L2,
-        sigma_PR_IF, 1.0,
-        CombinationType.IONO_FREE,
-        satSystem, prn);
-    estimator.addMeasurement(prIF);
-    
-    // L1/L2 载波相位 → iono-free 组合
-    Phase phaseIF = new Phase(
-        obs.epoch, obs.ph_L1, obs.ph_L2,
-        sigma_PH_IF, 1.0,
-        CombinationType.IONO_FREE,
-        satSystem, prn);
-    estimator.addMeasurement(phaseIF);
-}
-
-// 估计
-estimator.estimate();
-```
-
-### 5.4 待估参数汇总
-
-| 参数类型 | 数量 (24h弧段) | 先验 σ | 说明 |
-|---------|:----------:|--------|------|
-| 初始位置 (3D) | 3 | 1 m | ECI 坐标 |
-| 初始速度 (3D) | 3 | 0.001 m/s | ECI 坐标 |
-| 经验加速度 R | 96 | 1×10⁻⁹ m/s² | 径向 |
-| 经验加速度 T | 96 | 5×10⁻⁹ m/s² | 沿轨 |
-| 经验加速度 N | 96 | 1×10⁻⁹ m/s² | 法向 |
-| 接收机钟差 | ~8640 | 100 m | 逐历元 (10s) |
-| GPS 模糊度 | ~100-200 | 10 cycles | 每弧段每卫星 |
-| Cd (可选) | 1 | 0.1 | 阻力系数 |
-| Cr (可选) | 1 | 0.05 | 光压系数 |
-| 对流层湿延迟 | 12 | 0.01 m | 每2小时 |
-| **总计** | **~9000+** | | |
-
----
-
-## Phase 6: 质量评估
-
-### 6.1 轨道重叠检验 (每日弧段 6h 重叠)
-
-```
-弧段1: [T00:00, T30:00]    24h + 前后 3h padding
-弧段2: [T24:00, T54:00]
-             └── 重叠: [T24:00, T30:00], 6小时
-
-轨道差异 RMS (3D):
-  期望: < 2 cm (固定解), < 5 cm (浮点解)
-```
-
-### 6.2 KBR/星间测距残差 (仅 GRACE-FO)
-
-```
-测量: KBR 星间测距 (精度 ~1 μm/s 距离变化率)
-与 POD 轨道预测的星间距离差异:
-  期望残差 RMS < 1 mm/s
-```
-
-### 6.3 SLR (卫星激光测距) 外部检核
-
-```
-独立于 GPS 的外部检核手段:
-  SLR 残差 RMS < 2-3 cm → 5cm 轨道精度成立
-```
-
-### 6.4 精度预算表
-
-| 指标 | 目标值 | 检验方法 |
-|------|--------|---------|
-| 轨道重叠 3D RMS | < 2 cm (固定) / < 5 cm (浮点) | 6h重叠弧段 |
-| KBR 残差 RMS | < 1 mm/s | 星间测距 |
-| SLR 残差 RMS | < 2 cm | 独立外部检核 |
-| 伪距残差 RMS | < 50 cm | 观测值拟合 |
-| 载波相位残差 RMS | < 5 mm | 观测值拟合 |
-| 模糊度固定率 | > 90% | LAMBDA Ratio > 3.0 |
-
----
-
-## 完整 Pipeline 总结 (一句话版)
-
-```
-GPS1B+ACC1B+SCA1B → 预处理(RINEX+周跳+粗差) → 测量建模(IF组合+PCV+PCO+
-缠绕+对流层+相对论) + IGS精密产品(SP3+CLK+ERP) → Reduced-Dynamic力学模型
-(重力场+潮汐+阻力+光压+RTN经验加速度) → 浮点解 Batch LS → LAMBDA模糊度固定
-→ 固定解 Batch LS → 轨道重叠+KBR+SLR检核 → 5cm精度轨道 ✅
-```
-
----
-
-## 参考资料
-
-1. Jäggi et al. (2006). Reduced-dynamic orbit determination. *Advances in Space Research*, 38(11).
-2. Kang et al. (2021). GRACE-FO antenna phase center modeling and precise orbit determination. *Remote Sensing*, 13(21), 4204.
-3. Kroes et al. (2005). Precise GRACE baseline determination using GPS. *GPS Solutions*, 9.
-4. Teunissen (1995). The least-squares ambiguity decorrelation adjustment. *Journal of Geodesy*, 70(1).
-5. Wu et al. (1993). Effects of antenna orientation on GPS carrier phase. *Manuscripta Geodaetica*, 18.
-6. GRACE-FO Level 1 Data Product User Handbook (JPL D-56922).
-7. IERS Conventions 2010 (Petit & Luzum, eds.).
-8. Orekit Documentation: https://www.orekit.org/
+| | CODE | BRDC | 退化 |
+|---|------|------|------|
+| Mean | 0.169m | 1.355m | 8x |
+| Best | 0.047m | 0.428m | 9x |

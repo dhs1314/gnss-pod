@@ -64,11 +64,14 @@ for date_str in DATES:
     doy = dt.strftime("%j"); y = dt.year; m = dt.month
 
     if USE_BROADCAST:
-        # Load broadcast-simulated SP3 (CODE + 1.0m orbit + 1.5m clock noise)
+        # Load pre-generated BRDC SP3 pkl (from real IGS broadcast ephemeris)
         brdc_p = DR / "BRDC" / f"BRDC_{y}{doy}0000_01D_05M_ORB.pkl"
         if brdc_p.exists():
             sp3_pkls[date_str] = pickle.load(open(str(brdc_p), "rb"))
-        # Use empty clk_data — broadcast clock is embedded in SP3
+            n_pos = sum(1 for t in sp3_pkls[date_str]['epochs'] for _ in sp3_pkls[date_str]['epochs'][t])
+            print(f"  BRDC REAL {date_str}: {n_pos} pos from IGS broadcast ephemeris")
+        else:
+            print(f"  BRDC {date_str}: no precomputed file, SKIP")
         clk_data[date_str] = {}
     else:
         pref = f"COD0OPSFIN_{y}{doy}0000_01D"
@@ -135,8 +138,7 @@ from src.batch_solver import BatchLinearSolver
 from run_sequential_pod import load_gnv1b, compute_epoch_geometry, interpolate_ref
 from coordinates import ecef_to_eci, eci_to_ecef
 from sequential_filter import SequentialEKF
-if not SKIP_CODE_ORBIT:
-    from src.code_orbit import kinematic_wls_single_epoch, CodeOnlyOrbitSolver
+from src.code_orbit import kinematic_wls_single_epoch, CodeOnlyOrbitSolver
 from src.data_quality import (
     check_sv_coverage, check_snr, check_sp3_integrity, check_clk_integrity,
     compute_per_sv_multipath, compute_mw_stability, screen_sv_for_batch,
@@ -182,15 +184,17 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
                         and abs((g - gps0) % INTERVAL) <= 2))
     if len(epochs) < 6: return None
 
-    # ── Orekit propagator — created ONCE, shared by code-orbit and GN loop ──
-    prop = OrekitPropagator(
-        gravity_field=str(grav_path), gravity_degree=GRAV_NMAX,
-        solid_tides=True, ocean_tides=True, ocean_tide_degree=50,
-        third_body='lunisolar', srp_model='isotropic', relativity=True,
-        drag_model='exponential',
-        mass=580.0, area_drag=0.68, area_srp=3.4, CR=1.3, CD=2.2,
-        stm_perturb=1.0, integrator_tol=1e-12)
-    prop._setup()
+    # ── Orekit propagator — only when needed (not broadcast mode) ──
+    prop = None
+    if not USE_BROADCAST:
+        prop = OrekitPropagator(
+            gravity_field=str(grav_path), gravity_degree=GRAV_NMAX,
+            solid_tides=True, ocean_tides=True, ocean_tide_degree=50,
+            third_body='lunisolar', srp_model='isotropic', relativity=True,
+            drag_model='exponential',
+            mass=580.0, area_drag=0.68, area_srp=3.4, CR=1.3, CD=2.2,
+            stm_perturb=1.0, integrator_tol=1e-12)
+        prop._setup()
 
     # ── Step 0 + 1: Code-only initial orbit (no GNV1B dependency) ──
     code_orbit = None; code_bad_svs = set()
@@ -267,14 +271,15 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
                     code_orbit = None
 
     # Get initial state for EKF
+    # Priority: code_orbit > kinematic WLS (self-consistent, GNV1B never used for computation)
+    # GNV1B only allowed in explicit --skip-code-orbit backward-compat mode
     if code_orbit is not None:
         r0e = code_orbit['r_ecef'][0].copy()
         v0e = code_orbit['v_ecef'][0].copy()
-    elif ref is not None:
+    elif SKIP_CODE_ORBIT and ref is not None:
         r0e = interpolate_ref(ref, epochs[0])
         v0e = interpolate_ref(refv, epochs[0])
     else:
-        # No reference at all — use kinematic guess
         r0_kin, _ = kinematic_wls_single_epoch(gps1b, epochs[0], sp3)
         r0e = np.array(r0_kin); v0e = np.zeros(3)
 
@@ -307,8 +312,28 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
     N_BIAS = min(60, len(epochs))
     sv_p_res = {}
 
-    # Build receiver position/velocity lookup from code_orbit or GNV1B
-    def _get_rcv_pos(gps_sod):
+    # ── Position/velocity lookup functions ──
+    # Two modes: compute (code_orbit only) and reference (code_orbit → GNV1B fallback)
+
+    def _get_compute_pos(gps_sod):
+        """Receiver position for COMPUTATION steps (code bias, etc.).
+        NO GNV1B fallback — must be self-consistent."""
+        if code_orbit is not None:
+            try:
+                idx0 = np.searchsorted(code_epochs, gps_sod)
+                if idx0 == 0: return code_orbit['r_ecef'][0]
+                if idx0 >= len(code_epochs): return code_orbit['r_ecef'][-1]
+                t0, t1 = code_epochs[idx0-1], code_epochs[idx0]
+                dt = (gps_sod - t0) / max(t1 - t0, 1e-6)
+                return code_orbit['r_ecef'][idx0-1] * (1-dt) + code_orbit['r_ecef'][idx0] * dt
+            except: return None
+        # Fallback: use kinematic WLS from Step 0
+        r0k, _ = kinematic_wls_single_epoch(gps1b, gps_sod, sp3)
+        return np.array(r0k)
+
+    def _get_ref_pos(gps_sod):
+        """Receiver position for VALIDATION only (3D RMS).
+        GNV1B fallback is acceptable here."""
         if code_orbit is not None:
             try:
                 idx0 = np.searchsorted(code_epochs, gps_sod)
@@ -322,7 +347,8 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
             return interpolate_ref(ref, gps_sod)
         return None
 
-    def _get_rcv_vel(gps_sod):
+    def _get_ref_vel(gps_sod):
+        """Receiver velocity for VALIDATION only (3V RMS)."""
         if code_orbit is not None and 'v_ecef' in code_orbit:
             try:
                 idx0 = np.searchsorted(code_epochs, gps_sod)
@@ -341,7 +367,7 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
         recs = gps1b.get(int(gps_sod), gps1b.get(gps_sod, {}))
         for sv_id, rec in recs.items():
             if 'P_if' not in rec: continue
-            rcv_r = _get_rcv_pos(gps_sod)
+            rcv_r = _get_ref_pos(gps_sod) if SKIP_CODE_ORBIT else _get_compute_pos(gps_sod)
             if rcv_r is None: continue
             sat_pos, sat_clk, rho_corr = get_sat_geometry(sp3, sv_id, utc_dt, rcv_r, clk)
             if sat_pos is None: continue
@@ -391,7 +417,7 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
     }
     ekf = SequentialEKF(ekf_cfg)
     state = ekf.initialize(r0i, v0i, mjd_s, epochs[0])
-    pass1 = []
+    pass1 = []; r_ekf_list = []; v_ekf_list = []
     for i_ep, gps_sod in enumerate(epochs):
         mjd_u = MJD0 + gps_sod / SEC
         if i_ep > 0:
@@ -399,11 +425,15 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
             state = ekf.predict(state, gps_sod, mjd_prev, mjd_prev + 69.184 / SEC)
         rcv_e, _ = eci_to_ecef(state.r_eci, state.v_eci, mjd_u)
         ep_data = compute_epoch_geometry(gps_sod, gps1b, sp3, rcv_e, clk)
-        if not ep_data: continue
+        if not ep_data:
+            r_ekf_list.append(state.r_eci.copy()); v_ekf_list.append(state.v_eci.copy())
+            continue
         # Filter code-level outliers detected in Step 1
         if code_bad_svs:
             ep_data = [d for d in ep_data if d['sv'] not in code_bad_svs]
-        if not ep_data: continue
+        if not ep_data:
+            r_ekf_list.append(state.r_eci.copy()); v_ekf_list.append(state.v_eci.copy())
+            continue
         state, stats = ekf.process_epoch(state, ep_data, sp3, sv_bias, sv_bias_ref,
                                           mjd_u, mjd_u + 69.184 / SEC, 120)
         lat = np.arcsin(rcv_e[2] / np.linalg.norm(rcv_e))
@@ -419,6 +449,8 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
             d['_obs_code'] = float(d.get('P_if_raw', 0)) + dcb_c - sv_bias.get(d['sv'], 0.0)
             d['_obs_phase'] = float(d.get('L_if_raw', 0)) - sv_bias.get(d['sv'], 0.0)
         pass1.append(ep_data)
+        r_ekf_list.append(state.r_eci.copy())
+        v_ekf_list.append(state.v_eci.copy())
 
     ekf_phase = stats.get('rms_phase', 0)
     n_sv = state.n_sv
@@ -504,24 +536,30 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
     bls_sol = bls.solve()
     batch_ph = bls_sol['rms_phase']
 
-    # Orekit GN — reuses the `prop` created above
-    gn = BatchOrbitLSQv3(
-        pass1, gn_fn, t_ep,
-        mjd_utc_start=mjd_s, mjd_tt_start=mjd_tt,
-        sigma_phase=0.20, sigma_code=0.30,
-        max_iter=6, prior_r0=1.0, prior_v0=0.01, prior_emp=1e-7,
-        damping=0.5, orekit_prop=prop, estimate_cd_cr=False)
-
-    t0 = time.time()
-    sol = gn.solve(r0i, v0i, arc_wl_fixed=arc_wl_fixed, osb_wl=osb_wl, osb_nl=osb_nl)
-    dt_gn = time.time() - t0
-    n_arc_nl = sol.get('n_arc_nl', 0)
+    # Orekit GN — skip for broadcast (convergence unreliable with ~1m orbit errors)
+    if USE_BROADCAST:
+        # Use EKF orbit directly
+        print(f"  [BRDC-Quick] Skipping GN loop — using EKF orbit")
+        dt_gn = 0; n_arc_nl = 0
+        sol = {'r_eci': np.array(r_ekf_list), 'v_eci': np.array(v_ekf_list),
+               'rms_phase': ekf_phase, 'converged': False, 'iterations': 0}
+    else:
+        gn = BatchOrbitLSQv3(
+            pass1, gn_fn, t_ep,
+            mjd_utc_start=mjd_s, mjd_tt_start=mjd_tt,
+            sigma_phase=0.20, sigma_code=0.30,
+            max_iter=6, prior_r0=1.0, prior_v0=0.01, prior_emp=1e-7,
+            damping=0.5, orekit_prop=prop, estimate_cd_cr=False)
+        t0 = time.time()
+        sol = gn.solve(r0i, v0i, arc_wl_fixed=arc_wl_fixed, osb_wl=osb_wl, osb_nl=osb_nl)
+        dt_gn = time.time() - t0
+        n_arc_nl = sol.get('n_arc_nl', 0)
 
     # 3D position + velocity RMS
     dr_vals = []; dv_vals = []
     for i_ep, gps_sod in enumerate(epochs):
-        r_ref = _get_rcv_pos(gps_sod)
-        v_ref = _get_rcv_vel(gps_sod)
+        r_ref = _get_ref_pos(gps_sod)
+        v_ref = _get_ref_vel(gps_sod)
         if r_ref is not None:
             mjd_u = MJD0 + gps_sod / SEC
             r_e, v_e = eci_to_ecef(sol['r_eci'][i_ep], sol['v_eci'][i_ep], mjd_u)
