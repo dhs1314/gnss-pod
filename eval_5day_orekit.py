@@ -20,7 +20,10 @@ sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / 'src'))
 parser = argparse.ArgumentParser(description='Multi-day Orekit GN validation')
 parser.add_argument('--dates', default='2024-04-29,2024-04-30,2024-05-01,2024-05-02,2024-05-03', help='Comma-separated dates')
 parser.add_argument('--hours', default='0.17,0.50', help='Comma-separated arc lengths')
-parser.add_argument('--grace-id', default='C', help='GRACE-FO satellite ID')
+parser.add_argument('--grace-id', default='C', help='Satellite ID within mission')
+parser.add_argument('--mission', default='GRACE-FO',
+    choices=['GRACE-FO','GRACE','SWARM','FY-3','COSMIC-2','Jason-3'],
+    help='Satellite mission (default: GRACE-FO)')
 parser.add_argument('--auto-download', action='store_true', default=True, help='Auto-download missing CODE data')
 parser.add_argument('--min-coverage', type=float, default=0.0, help='Min avg SV coverage (0-1) to accept arc')
 parser.add_argument('--fuse-arcs', type=float, default=0.0, help='If >0, fuse N sliding arcs per hour')
@@ -59,7 +62,30 @@ if not os.environ.get('JAVA_HOME'):
             break
 
 DATES = [d.strip() for d in args.dates.split(',')]
-GRACE = args.grace_id; INTERVAL = 30
+GRACE = args.grace_id; MISSION = args.mission; INTERVAL = 30
+
+# Load satellite-specific parameters
+from src.satellite_config import get_config as _get_sat_cfg
+_sat_params = _get_sat_cfg(MISSION, GRACE)
+MASS = _sat_params['mass_kg']
+AREA_D = _sat_params['area_drag_m2']
+AREA_S = _sat_params['area_srp_m2']
+CD_DEF = _sat_params['CD']
+CR_DEF = _sat_params['CR']
+
+# Determine data directory prefix based on mission
+if MISSION == 'SWARM':
+    DATA_PREFIX = 'swarm'
+    GPS1B_FMT = 'GPS1B_{date}_SWARM_{sat}.pkl'
+    GNV1B_FMT = None  # No GNV1B for SWARM
+elif MISSION in ('GRACE-FO', 'GRACE'):
+    DATA_PREFIX = 'gracefo'
+    GPS1B_FMT = 'GPS1B_{date}_{sat}_04.pkl'
+    GNV1B_FMT = 'GNV1B_{date}_{sat}_04.txt'
+else:
+    DATA_PREFIX = MISSION.lower().replace('-','')
+    GPS1B_FMT = 'GPS1B_{date}_{sat}_04.pkl'
+    GNV1B_FMT = None
 ARC_HOURS = [float(h.strip()) for h in args.hours.split(',')]
 MIN_COVERAGE = args.min_coverage; FUSE_ARCS = args.fuse_arcs
 USE_BROADCAST = args.broadcast
@@ -179,8 +205,9 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
     from precision_products import compute_dcb_if_correction
 
     # GPS1B
-    gps_path = DR / 'gracefo' / str(y) / date_str / f'GPS1B_{date_str}_{GRACE}_04.pkl'
+    gps_path = DR / DATA_PREFIX / str(y) / date_str / GPS1B_FMT.format(date=date_str, sat=GRACE)
     if not gps_path.exists():
+        print(f"  GPS1B not found: {gps_path}")
         return None
     gps1b = pickle.load(open(str(gps_path), "rb"))
 
@@ -191,16 +218,14 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
     if sp3 is None or dcb is None:
         return None
 
-    # GNV1B reference (only needed for 3D RMS validation or skip-code-orbit mode)
+    # Reference orbit for validation
     ref, refv = None, None
-    if SKIP_CODE_ORBIT:
-        gnv_path = DR / 'gracefo' / str(y) / date_str / f'GNV1B_{date_str}_{GRACE}_04.txt'
-        if not gnv_path.exists(): return None
-        ref, refv = load_gnv1b(str(gnv_path))
-    else:
-        # Still try to load GNV1B for validation (non-essential)
-        gnv_path = DR / 'gracefo' / str(y) / date_str / f'GNV1B_{date_str}_{GRACE}_04.txt'
-        if gnv_path.exists():
+    if GNV1B_FMT is not None:
+        gnv_path = DR / DATA_PREFIX / str(y) / date_str / GNV1B_FMT.format(date=date_str, sat=GRACE)
+        if SKIP_CODE_ORBIT:
+            if not gnv_path.exists(): return None
+            ref, refv = load_gnv1b(str(gnv_path))
+        elif gnv_path.exists():
             ref, refv = load_gnv1b(str(gnv_path))
 
     # Time windows — always use arc_h for precise OD
@@ -210,15 +235,15 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
                         and abs((g - gps0) % INTERVAL) <= 2))
     if len(epochs) < 6: return None
 
-    # ── Orekit propagator — only when needed (not broadcast mode) ──
+    # ── Orekit propagator — only for GRACE-FO/GRACE with CODE products ──
     prop = None
-    if not USE_BROADCAST:
+    if not USE_BROADCAST and MISSION in ('GRACE-FO', 'GRACE'):
         prop = OrekitPropagator(
             gravity_field=str(grav_path), gravity_degree=GRAV_NMAX,
             solid_tides=True, ocean_tides=True, ocean_tide_degree=50,
             third_body='lunisolar', srp_model='isotropic', relativity=True,
             drag_model='exponential',
-            mass=580.0, area_drag=0.68, area_srp=3.4, CR=1.3, CD=2.2,
+            mass=MASS, area_drag=AREA_D, area_srp=AREA_S, CR=CR_DEF, CD=CD_DEF,
             stm_perturb=1.0, integrator_tol=1e-12)
         prop._setup()
 
@@ -269,8 +294,8 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
                 try:
                     # Build force fn for code-only orbit using loaded gravity
                     _G = {'Cnm': Cnm, 'Snm': Snm, 'Nmax': GRAV_NMAX, 'GM': GM_grav, 'R': R_grav}
-                    def _code_force(pos, vel, CD=2.2, CR=1.3, area_drag=0.68,
-                                    area_srp=3.4, mass=580.0, empirical_acc_rtn=None,
+                    def _code_force(pos, vel, CD=CD_DEF, CR=CR_DEF, area_drag=AREA_D,
+                                    area_srp=AREA_S, mass=MASS, empirical_acc_rtn=None,
                                     mjd_utc=None, mjd_tt=None, **kw):
                         return total_acc_eci(pos, vel,
                             mjd_tt=mjd_tt or code_mjd_tt,
@@ -417,7 +442,7 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
 
     # Force function closure
     _G = {'Cnm': Cnm, 'Snm': Snm, 'Nmax': GRAV_NMAX, 'GM': GM_grav, 'R': R_grav}
-    def gn_fn(pos, vel, CD=2.2, CR=1.3, area_drag=0.68, area_srp=3.4, mass=580.0,
+    def gn_fn(pos, vel, CD=CD_DEF, CR=CR_DEF, area_drag=AREA_D, area_srp=AREA_S, mass=MASS,
               empirical_acc_rtn=None, bodies=None, mjd_utc=None, mjd_tt=None, **kw):
         return total_acc_eci(pos, vel,
             mjd_tt=mjd_tt or mjd_tt, mjd_utc=mjd_utc or mjd_s,
@@ -562,10 +587,10 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
     bls_sol = bls.solve()
     batch_ph = bls_sol['rms_phase']
 
-    # Orekit GN — skip for broadcast (convergence unreliable with ~1m orbit errors)
-    if USE_BROADCAST:
-        # Use EKF orbit directly
-        print(f"  [BRDC-Quick] Skipping GN loop — using EKF orbit")
+    # Orekit GN — skip for broadcast/Orekit-unavailable, use EKF orbit directly
+    if USE_BROADCAST or prop is None:
+        tag = "Broadcast" if USE_BROADCAST else "Python-only"
+        print(f"  [{tag}] Skipping GN loop — using EKF orbit")
         dt_gn = 0; n_arc_nl = 0
         sol = {'r_eci': np.array(r_ekf_list), 'v_eci': np.array(v_ekf_list),
                'rms_phase': ekf_phase, 'converged': False, 'iterations': 0}
