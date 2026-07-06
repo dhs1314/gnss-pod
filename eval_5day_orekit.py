@@ -30,7 +30,33 @@ parser.add_argument('--code-arc-hours', type=float, default=1.0,
     help='Arc length for code-only initial orbit [hours] (default: 1.0)')
 parser.add_argument('--skip-code-orbit', action='store_true', default=False,
     help='Use GNV1B instead of code-only orbit (backward compat)')
+parser.add_argument('--config', type=str, default=None,
+    help='Path to YAML config file (container mode)')
 args = parser.parse_args()
+
+# YAML config support (container mode)
+if args.config:
+    from src.config_loader import load_config, apply_config_to_args
+    _cfg = load_config(args.config)
+    args = apply_config_to_args(_cfg, args)
+    if 'runtime' in _cfg:
+        rt = _cfg['runtime']
+        if rt.get('orekit_data_path'):
+            os.environ['OREKIT_DATA_PATH'] = rt['orekit_data_path']
+        if rt.get('java_home') and not os.environ.get('JAVA_HOME'):
+            os.environ['JAVA_HOME'] = rt['java_home']
+
+# Fallback JAVA_HOME: detect from common Windows paths if not set
+if not os.environ.get('JAVA_HOME'):
+    for candidate in [
+        r'C:\Program Files\JetBrains\PyCharm Community Edition 2024.3.5\jbr',
+        r'C:\Program Files\Java\jdk-17',
+        r'C:\Program Files\Eclipse Adoptium\jdk-17-hotspot',
+    ]:
+        jvm_dll = os.path.join(candidate, 'bin', 'server', 'jvm.dll')
+        if os.path.exists(jvm_dll):
+            os.environ['JAVA_HOME'] = candidate
+            break
 
 DATES = [d.strip() for d in args.dates.split(',')]
 GRACE = args.grace_id; INTERVAL = 30

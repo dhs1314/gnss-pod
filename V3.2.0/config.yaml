@@ -1,0 +1,126 @@
+# GRACE-FO PPP-AR POD V3.2.0 Configuration
+# ==========================================
+# All paths inside the container are relative to /data (mounted volume).
+# Edit this file to switch satellites, dates, GPS products, etc.
+
+# ── Runtime ──
+runtime:
+  mode: evaluate              # evaluate | single
+  java_home: /usr/lib/jvm/java-17-openjdk
+  orekit_data_path: /data/orekit
+  output_dir: /data/results   # results written here
+
+# ── Satellite ──
+satellite:
+  id: C                       # GRACE-FO C/D, GRACE A/B, SWARM A/B/C, etc.
+  # Override dynamics params (defaults from satellite_config.py):
+  # mass_kg: 580.0
+  # area_drag_m2: 0.68
+  # area_srp_m2: 3.4
+  # CD: 2.2
+  # CR: 1.3
+
+# ── Dates & Arcs ──
+evaluation:
+  dates:                       # YYYY-MM-DD comma-separated
+    - 2024-04-29
+    - 2024-04-30
+    - 2024-05-01
+    - 2024-05-02
+    - 2024-05-03
+    - 2024-05-04
+    - 2024-05-05
+    - 2024-05-06
+    - 2024-05-08
+  arc_hours:                   # hours per arc
+    - 0.17
+    - 0.50
+  epoch_interval: 30           # seconds between epochs
+  min_coverage: 0.0            # 0.0 = no filter, 0.70 = skip low-coverage arcs
+
+# ── GPS Orbit & Clock Source ──
+gps_products:
+  mode: precise                # precise (CODE SP3+CLK) | broadcast (IGS BRDC)
+  # Path pattern for SP3 files. {year} {doy} are substituted from dates.
+  sp3_pattern: /data/CODE/{year}/COD0OPSFIN_{year}{doy}0000_01D_05M_ORB.SP3
+  clk_pattern: /data/CODE/{year}/COD0OPSFIN_{year}{doy}0000_01D_30S_CLK.CLK
+  brdc_dir: /data/BRDC         # precomputed BRDC pkl files (for broadcast mode)
+
+# ── LEO GPS Observations ──
+observations:
+  # Pattern for GPS1B files. {date} = YYYY-MM-DD, {sat_id} = satellite id
+  gps1b_pattern: /data/gracefo/{date}/GPS1B_{date}_{sat_id}_04.pkl
+  # Reference orbit for validation (optional). Set to empty to use code-only self-consistent mode.
+  gnv1b_pattern: /data/gracefo/{date}/GNV1B_{date}_{sat_id}_04.txt
+  # Code-only initial orbit arc length (hours). Set to 0 to disable.
+  code_arc_hours: 0.0
+
+# ── Auxiliary Products ──
+products:
+  antex_file: /data/igs14.atx
+  iers_eop_file: /data/IERS/eopc04_IAU2000.txt
+  dcb_p1p2_pattern: /data/CODE/{year}/P1P2{year2d}{month}.DCB
+  dcb_p1c1_pattern: /data/CODE/{year}/P1C1{year2d}{month}.DCB
+  osb_pattern: /data/CODE/{year}/COD0OPSFIN_20241200000_01D_01D_OSB.BIA
+
+# ── Gravity Field ──
+gravity:
+  model: GGM05C                # GGM05C | EIGEN-6C4 | custom
+  file: /data/gravity/GGM05C.gfc
+  nmax: 150
+
+# ── Force Models ──
+dynamics:
+  solid_tides: true
+  ocean_tides: true
+  ocean_tide_degree: 50
+  third_body: lunisolar        # lunisolar | sun | none
+  srp_model: isotropic         # isotropic | boxwing
+  drag_model: exponential      # exponential | nrlmsise00 | harris_priester
+  relativity: true
+
+# ── EKF Parameters ──
+ekf:
+  sigma_phase: 0.20            # phase noise zenith [m]
+  sigma_code: 0.30             # code noise zenith [m]
+  sigma_acc_process: 0.001     # unmodeled acceleration [m/s^2]
+  tau_emp: 600.0               # empirical RTN correlation time [s]
+  sigma_emp_ss: 1.0e-8         # empirical RTN steady-state sigma
+  sigma_zwd_rw: 1.0e-9         # ZWD random walk [m/sqrt-s]
+  chi2_threshold_short: 25     # for arcs < 0.3h
+  chi2_threshold_long: 100     # for arcs >= 0.3h
+  el_min_deg: 5.0              # elevation cutoff [deg]
+  clock_rw_short: 0.0004       # clock random walk < 0.3h
+  clock_rw_long: 0.001         # clock random walk >= 0.3h
+  elev_exp_phase: 1.0
+  elev_exp_code_short: 1.0     # for arcs < 0.3h
+  elev_exp_code_long: 0.70     # for arcs >= 0.3h
+  ar_min_epochs: 6
+  mw_max_epochs: 200
+  use_phase_windup: true
+  use_relativity: true
+  use_cycle_slip: true
+  dynamics_mode: simplified    # simplified | orekit
+
+# ── GN Outer Loop ──
+gn_loop:
+  max_iter: 6
+  damping: 0.5
+  prior_r0: 1.0                # [m]
+  prior_v0: 0.01               # [m/s]
+  prior_emp: 1.0e-7            # [m/s^2]
+  dx_tol_pos: 0.002            # [m]
+  dx_tol_vel: 0.0002           # [m/s]
+  estimate_cd_cr: false
+
+# ── Quality Control ──
+qc:
+  min_sv_coverage: 0.40        # reject SVs below this
+  snr_l1_min: 30               # [dB-Hz]
+  snr_l2_min: 25               # [dB-Hz]
+  mp_threshold: 3.5            # MP1 RMS threshold [m]
+  mw_std_corrupted: 10.0       # [cycles] - reject entirely
+  mw_std_noisy: 0.30           # [cycles] - reject for WL
+  wl_fix_residual: 0.35        # [cycles] - WL integer acceptance
+  nl_fix_residual: 0.30        # [cycles] - NL integer acceptance
+  robust_reweight: true        # enable Huber IRLS in BatchSolver

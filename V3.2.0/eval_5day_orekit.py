@@ -30,7 +30,23 @@ parser.add_argument('--code-arc-hours', type=float, default=1.0,
     help='Arc length for code-only initial orbit [hours] (default: 1.0)')
 parser.add_argument('--skip-code-orbit', action='store_true', default=False,
     help='Use GNV1B instead of code-only orbit (backward compat)')
+parser.add_argument('--config', type=str, default=None,
+    help='Path to YAML config file (container mode)')
 args = parser.parse_args()
+
+# Load YAML config if provided (container mode)
+if args.config:
+    from src.config_loader import load_config, apply_config_to_args
+    _cfg = load_config(args.config)
+    args = apply_config_to_args(_cfg, args)
+    # Override data root from config if running in container
+    if 'runtime' in _cfg:
+        import os as _os
+        rt = _cfg['runtime']
+        if rt.get('orekit_data_path'):
+            _os.environ['OREKIT_DATA_PATH'] = rt['orekit_data_path']
+        if rt.get('java_home'):
+            _os.environ['JAVA_HOME'] = rt['java_home']
 
 DATES = [d.strip() for d in args.dates.split(',')]
 GRACE = args.grace_id; INTERVAL = 30
