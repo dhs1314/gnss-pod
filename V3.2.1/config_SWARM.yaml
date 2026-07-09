@@ -1,0 +1,119 @@
+# SWARM-A PPP-AR POD Configuration (V3.2.0)
+# ==========================================
+
+runtime:
+  mode: evaluate
+  java_home: /usr/lib/jvm/java-17-openjdk
+  orekit_data_path: /data/orekit
+  output_dir: /data/results
+
+# ── SWARM-A Satellite ──
+satellite:
+  mission: SWARM
+  id: A
+  mass_kg: 473.0
+  area_drag_m2: 1.0
+  area_srp_m2: 4.5
+  CD: 2.4
+  CR: 1.2
+
+# ── Evaluation Dates ──
+evaluation:
+  dates:
+    - 2024-04-29
+    - 2024-04-30
+    - 2024-05-01
+  arc_hours:
+    - 0.17
+    - 0.50
+  epoch_interval: 30
+  min_coverage: 0.0
+
+# ── GPS Products (same as GRACE-FO) ──
+gps_products:
+  mode: precise
+  sp3_pattern: /data/CODE/{year}/COD0OPSFIN_{year}{doy}0000_01D_05M_ORB.SP3
+  clk_pattern: /data/CODE/{year}/COD0OPSFIN_{year}{doy}0000_01D_30S_CLK.CLK
+  brdc_dir: /data/BRDC
+
+# ── SWARM GPS Observations ──
+observations:
+  gps1b_pattern: /data/swarm/{date}/GPS1B_{date}_SWARM_{sat_id}.pkl
+  gnv1b_pattern: ""           # No GNV1B - use code-only self-consistent
+  code_arc_hours: 1.0         # Enable code-only initial orbit
+
+# ── SWARM Reference Orbit (for validation) ──
+reference_orbit:
+  type: sp3                    # sp3 | none
+  sp3_pattern: /data/CODE/{year}/COD0OPSFIN_{year}{doy}0000_01D_05M_LEO_ORB.SP3
+  sp3_satellite_id: SA         # SWARM-A in CODE SP3
+
+# ── Auxiliary Products ──
+products:
+  antex_file: /data/igs14.atx
+  iers_eop_file: /data/IERS/eopc04_IAU2000.txt
+  dcb_p1p2_pattern: /data/CODE/{year}/P1P2{year2d}{month}.DCB
+  dcb_p1c1_pattern: /data/CODE/{year}/P1C1{year2d}{month}.DCB
+  osb_pattern: /data/CODE/{year}/COD0OPSFIN_20241200000_01D_01D_OSB.BIA
+
+# ── Gravity ──
+gravity:
+  model: GGM05C
+  file: /data/gravity/GGM05C.gfc
+  nmax: 150
+
+# ── Force Models ──
+dynamics:
+  solid_tides: true
+  ocean_tides: true
+  ocean_tide_degree: 50
+  third_body: lunisolar
+  srp_model: isotropic
+  drag_model: exponential
+  relativity: true
+
+# ── EKF ──
+ekf:
+  sigma_phase: 0.20
+  sigma_code: 0.30
+  sigma_acc_process: 0.001
+  tau_emp: 600.0
+  sigma_emp_ss: 1.0e-8
+  sigma_zwd_rw: 1.0e-9
+  chi2_threshold_short: 25
+  chi2_threshold_long: 100
+  el_min_deg: 5.0
+  clock_rw_short: 0.0004
+  clock_rw_long: 0.001
+  elev_exp_phase: 1.0
+  elev_exp_code_short: 1.0
+  elev_exp_code_long: 0.70
+  ar_min_epochs: 6
+  mw_max_epochs: 200
+  use_phase_windup: true
+  use_relativity: true
+  use_cycle_slip: true
+  dynamics_mode: simplified
+
+# ── GN Outer Loop ──
+gn_loop:
+  max_iter: 6
+  damping: 0.5
+  prior_r0: 1.0
+  prior_v0: 0.01
+  prior_emp: 1.0e-7
+  dx_tol_pos: 0.002
+  dx_tol_vel: 0.0002
+  estimate_cd_cr: false
+
+# ── Quality Control ──
+qc:
+  min_sv_coverage: 0.40
+  snr_l1_min: 30
+  snr_l2_min: 25
+  mp_threshold: 3.5
+  mw_std_corrupted: 10.0
+  mw_std_noisy: 0.30
+  wl_fix_residual: 0.35
+  nl_fix_residual: 0.30
+  robust_reweight: true

@@ -1,0 +1,24 @@
+version: "3.8"
+services:
+  pod-eval:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gnss-pod:v3.2.0
+    container_name: gnss-pod-eval
+    environment:
+      - OREKIT_DATA_PATH=/data/orekit
+      - JAVA_HOME=/opt/java/openjdk
+    volumes:
+      # Mount your local data directory. Structure expected:
+      #   /your/data/gracefo/2024/{date}/GPS1B_*.pkl
+      #   /your/data/CODE/2024/*.SP3, *.CLK
+      #   /your/data/gravity/GGM05C.gfc
+      #   /your/data/orekit/  (Orekit data: EOP, CSSI, DE-440, FES2004)
+      #   /your/data/igs14.atx
+      #   /your/data/IERS/eopc04_IAU2000.txt
+      - D:/prj/gnss_pod/data:/data:ro
+      # Results written here (writable)
+      - D:/prj/gnss_pod/results:/data/results:rw
+    working_dir: /app
+    command: ["--config", "/app/config.yaml"]
