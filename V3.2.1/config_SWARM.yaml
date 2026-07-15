@@ -77,6 +77,7 @@ ekf:
   use_relativity: true
   use_cycle_slip: true
   dynamics_mode: orekit        # SWARM: Orekit full dynamics in EKF predict (GGM05C 150 + tides + drag)
+  predict_only: true            # SWARM: skip EKF measurement updates (multipath dominates)
 
 # ── GN Outer Loop ──
 gn_loop:

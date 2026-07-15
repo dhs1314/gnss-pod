@@ -92,6 +92,7 @@ SATELLITE_DB = {
             'gnss_systems': ['GPS'],
             'receiver': 'RUAG 8-channel GPS',
             'description': 'SWARM Alpha (lower pair, 460 km)',
+            'pco_body': [-1.65026, 0.00096, -0.80586],  # ESA ground cal, spacecraft frame
         },
         'B': {
             'mass_kg': 473.0,
@@ -104,6 +105,7 @@ SATELLITE_DB = {
             'gnss_systems': ['GPS'],
             'receiver': 'RUAG 8-channel GPS',
             'description': 'SWARM Bravo (lower pair, 460 km)',
+            'pco_body': [-1.65100, 0.00176, -0.80568],
         },
         'C': {
             'mass_kg': 473.0,
@@ -116,6 +118,7 @@ SATELLITE_DB = {
             'gnss_systems': ['GPS'],
             'receiver': 'RUAG 8-channel GPS',
             'description': 'SWARM Charlie (upper, 530 km)',
+            'pco_body': [-1.65018, 0.00103, -0.80555],
         },
     },
 

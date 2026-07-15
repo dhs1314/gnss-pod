@@ -176,3 +176,46 @@ def compute_pco_ecef_from_nadir(sat_pos_ecef, pco_z):
     nadir = -sat_pos_ecef / r_sat  # toward Earth centre
     # PCO positive Z = away from Earth = -nadir
     return pco_z * (-nadir)
+
+
+def compute_receiver_pco_ecef(r_ecef, v_ecef, pco_body):
+    """Compute receiver PCO vector in ECEF for a nadir-pointing LEO spacecraft.
+
+    The spacecraft body frame is defined as:
+        Z_body = -r_hat  (nadir = toward Earth centre)
+        Y_body = -(r × v) / |r × v|  (negative orbit normal)
+        X_body = Y_body × Z_body  (along-track, completes right-handed)
+
+    For SWARM: pco_body = [-1.65026, 0.00096, -0.80586] m
+    (ESA ground calibration, spacecraft reference frame)
+
+    Args:
+        r_ecef: spacecraft CoM ECEF position (3,) [m]
+        v_ecef: spacecraft CoM ECEF velocity (3,) [m/s]
+        pco_body: PCO in spacecraft body frame (3,) [m] (X=along-track, Y=cross-track, Z=nadir)
+
+    Returns:
+        pco_ecef: PCO vector in ECEF to add to CoM to get APC position (3,) [m]
+    """
+    r = np.asarray(r_ecef, dtype=float)
+    v = np.asarray(v_ecef, dtype=float)
+    pco = np.asarray(pco_body, dtype=float)
+
+    r_norm = float(np.linalg.norm(r))
+    if r_norm < 1e-6:
+        return np.zeros(3)
+
+    # Spacecraft body axes in ECEF
+    Z_body = -r / r_norm                       # nadir → Earth center
+    h = np.cross(r, v)                         # orbit angular momentum
+    h_norm = float(np.linalg.norm(h))
+    if h_norm < 1e-12:
+        return np.zeros(3)
+    Y_body = -h / h_norm                       # negative orbit normal
+    X_body = np.cross(Y_body, Z_body)          # along-track (right-handed)
+
+    # Rotate PCO from body frame to ECEF
+    pco_ecef = (pco[0] * X_body +
+                pco[1] * Y_body +
+                pco[2] * Z_body)
+    return np.asarray(pco_ecef)

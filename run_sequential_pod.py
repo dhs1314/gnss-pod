@@ -64,23 +64,53 @@ def load_gnv1b(filepath):
 
 
 def interpolate_ref(ref_dict, gps_sod):
-    """Linear interpolation in reference dictionary (gps_sod -> vector)."""
+    """Lagrange interpolation in reference dictionary (gps_sod -> vector).
+
+    Uses 5-point Lagrange for sub-cm accuracy on 10s-spaced LEO orbit data.
+    Falls back to linear at boundaries.
+    """
     ts = sorted(ref_dict.keys())
-    t0 = t1 = None
+    N = len(ts)
+
+    # Find insertion point
+    idx = 0
     for i, ti in enumerate(ts):
         if ti >= gps_sod:
-            t1 = ti
-            t0 = ts[i - 1] if i > 0 else None
+            idx = i
             break
-        t0 = ti
-    if t1 is None:
-        t0 = t1 = ts[-1]
-    if t0 is None:
-        t0 = ts[0]
-    if t0 == t1:
-        return ref_dict[t0]
-    a = (gps_sod - t0) / (t1 - t0)
-    return ref_dict[t0] * (1 - a) + ref_dict[t1] * a
+        idx = i
+
+    # Select interpolation stencil (up to 5 points centered around gps_sod)
+    half = 2
+    i0 = max(0, idx - half)
+    i1 = min(N, idx + half + 1)
+    # Ensure we have at least 2 points
+    if i1 - i0 < 2:
+        i0 = max(0, i1 - 2)
+
+    if i1 - i0 == 1 or i0 >= i1:
+        return ref_dict[ts[i0]]
+
+    # Build Lagrange weights
+    t_query = float(gps_sod)
+    result = None
+    denom_sum = 0.0
+
+    for i in range(i0, i1):
+        ti = float(ts[i])
+        if abs(t_query - ti) < 1e-9:
+            return ref_dict[ts[i]]
+        weight = 1.0
+        for j in range(i0, i1):
+            if j == i:
+                continue
+            tj = float(ts[j])
+            weight *= (t_query - tj) / (ti - tj)
+        if result is None:
+            result = np.zeros_like(ref_dict[ts[i0]], dtype=float)
+        result += weight * np.asarray(ref_dict[ts[i]], dtype=float)
+
+    return result
 
 
 def get_sat_geometry(sp3, sv, utc_dt, rcv_pos, clk_data=None):
