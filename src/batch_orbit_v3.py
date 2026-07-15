@@ -121,9 +121,10 @@ class BatchOrbitLSQv3:
         self.prior_emp = prior_emp
         self.N_epoch = len(pass1_geometry)
 
-        # Orekit
+        # Orekit (with fallback to Python dynamics on Java exceptions)
         self.orekit_prop = orekit_prop
         self._use_orekit = orekit_prop is not None
+        self._orekit_failures = 0
         self._estimate_cd_cr = estimate_cd_cr and self._use_orekit
 
         # Piecewise RTN
@@ -186,7 +187,18 @@ class BatchOrbitLSQv3:
 
     def _propagate(self, x_nl):
         if self._use_orekit:
-            return self._propagate_orekit_pw(x_nl)
+            try:
+                return self._propagate_orekit_pw(x_nl)
+            except Exception as e:
+                self._orekit_failures += 1
+                if self._orekit_failures <= 1:
+                    print(f"  [Orekit] Propagation failed ({e}), "
+                          f"falling back to Python dynamics")
+                if self._orekit_failures >= 3:
+                    # Permanent fallback after 3 failures
+                    self._use_orekit = False
+                    print(f"  [Orekit] Disabled — using Python dynamics for rest of GN loop")
+                return self._propagate_python_pw(x_nl)
         return self._propagate_python_pw(x_nl)
 
     def _propagate_python_pw(self, x_nl):

@@ -84,6 +84,10 @@ class MWBuffer:
         mean_mw = float(np.mean(vals))
         std_mw = float(np.std(vals))
 
+        # Safety: reject garbage MW (>500 cyc std — e.g. corrupted C/A-code data)
+        if std_mw > 500.0:
+            return None
+
         # Estimate receiver WL bias if not yet done
         if self._b_r_wl is None:
             self._estimate_receiver_bias()
@@ -296,7 +300,13 @@ class SequentialEKF:
         self.dynamics_mode = cfg.get('dynamics_mode', 'simplified')
         self._orekit_prop = None  # lazy-initialized
 
-        if self.dynamics_mode == 'orekit':
+        # Accept pre-created OrekitPropagator from caller (shared instance).
+        # This avoids duplicating force model setup and ensures correct
+        # satellite-specific mass/area/SRP/drag configuration.
+        if 'orekit_prop' in cfg and cfg['orekit_prop'] is not None:
+            self._orekit_prop = cfg['orekit_prop']
+            self.dynamics_mode = 'orekit'
+        elif self.dynamics_mode == 'orekit':
             from src.orekit_bridge import create_propagator
             self._orekit_prop, self.dynamics_mode, _warn = create_propagator(
                 mode='orekit',

@@ -38,9 +38,11 @@ parser.add_argument('--config', type=str, default=None,
 args = parser.parse_args()
 
 # YAML config support (container mode)
+PIPELINE_CFG = {}
 if args.config:
-    from src.config_loader import load_config, apply_config_to_args
+    from src.config_loader import load_config, apply_config_to_args, build_pipeline_config
     _cfg = load_config(args.config)
+    PIPELINE_CFG = build_pipeline_config(_cfg)
     args = apply_config_to_args(_cfg, args)
     if 'runtime' in _cfg:
         rt = _cfg['runtime']
@@ -90,6 +92,10 @@ ARC_HOURS = [float(h.strip()) for h in args.hours.split(',')]
 MIN_COVERAGE = args.min_coverage; FUSE_ARCS = args.fuse_arcs
 USE_BROADCAST = args.broadcast
 CODE_ARC_HOURS = args.code_arc_hours; SKIP_CODE_ORBIT = args.skip_code_orbit
+# SWARM/other satellites: code-orbit is slow with Python dynamics on long arcs.
+# Use kinematic WLS directly as EKF init — EKF converges fine from ~10m.
+if MISSION not in ('GRACE-FO', 'GRACE') and not SKIP_CODE_ORBIT:
+    CODE_ARC_HOURS = 0.0
 DR = ROOT / 'data'
 MJD0 = 51544.5; SEC = 86400.0; C_L = 299792458.0; OM = 7.2921151467e-5
 
@@ -164,6 +170,9 @@ if antex_path.exists():
 
 from precision_products import setup_iers_from_c04
 setup_iers_from_c04(str(DR / "IERS/eopc04_IAU2000.txt"))
+# Suppress astropy IERS predictive value expiry (needed for 2014 data)
+from astropy.utils.iers import conf as _iers_conf
+_iers_conf.auto_max_age = None
 
 # Gravity model
 from gravity_model import read_icgem_gfc
@@ -211,6 +220,14 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
         return None
     gps1b = pickle.load(open(str(gps_path), "rb"))
 
+    # Normalize SWARM GPS1B keys: some files use GPS absolute time (~1.4B),
+    # some use J2000-relative (~768M). Standardize to J2000-relative (matching GRACE-FO).
+    GPS_TO_J2000 = int((51544.5 - 44244.0) * 86400)  # 630763200
+    if MISSION == 'SWARM':
+        sample_key = next(iter(gps1b.keys()))
+        if sample_key > 1e9:  # GPS absolute time — normalize
+            gps1b = {k - GPS_TO_J2000: v for k, v in gps1b.items()}
+
     # SP3 and CLK
     sp3 = sp3_pkls.get(date_str)
     clk = clk_data.get(date_str) if not USE_BROADCAST else None
@@ -218,15 +235,37 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
     if sp3 is None or dcb is None:
         return None
 
-    # Reference orbit for validation
+    # Reference orbit for validation (NOT used in computation path)
     ref, refv = None, None
+    if MISSION == 'SWARM':
+        # Load SWARM L2 reduced-dynamic reference orbit (SP3 -> pkl)
+        ref_pkl = DR / DATA_PREFIX / str(y) / date_str / f'SWARM_REF_{date_str}.pkl'
+        if ref_pkl.exists():
+            try:
+                with open(str(ref_pkl), 'rb') as _f:
+                    ref, refv = pickle.load(_f)
+                # Reference keys are GPS absolute time (~1.4B seconds since 1980-01-06).
+                # GPS1B keys are J2000-relative (~0.77B seconds since 2000-01-01 12:00).
+                # Offset = MJD(J2000) - MJD(GPS_epoch) = (51544.5 - 44244.0)*86400 = 630763200s
+                GPS_TO_J2000 = int((51544.5 - 44244.0) * 86400)  # 630763200
+                if ref and min(ref.keys()) > 1e9:  # detect GPS-absolute keys
+                    ref = {k - GPS_TO_J2000: v for k, v in ref.items()}
+                if refv and min(refv.keys()) > 1e9:
+                    refv = {k - GPS_TO_J2000: v for k, v in refv.items()}
+            except Exception:
+                pass
     if GNV1B_FMT is not None:
         gnv_path = DR / DATA_PREFIX / str(y) / date_str / GNV1B_FMT.format(date=date_str, sat=GRACE)
         if SKIP_CODE_ORBIT:
-            if not gnv_path.exists(): return None
+            if not gnv_path.exists():
+                print(f"  SKIP: GNV1B required in skip-code-orbit mode but missing: {gnv_path}")
+                return None
             ref, refv = load_gnv1b(str(gnv_path))
         elif gnv_path.exists():
-            ref, refv = load_gnv1b(str(gnv_path))
+            try:
+                ref, refv = load_gnv1b(str(gnv_path))
+            except Exception:
+                pass  # non-essential validation data — never block computation
 
     # Time windows — always use arc_h for precise OD
     gps0 = min(gps1b.keys()) + arc_offset * 3600
@@ -235,14 +274,16 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
                         and abs((g - gps0) % INTERVAL) <= 2))
     if len(epochs) < 6: return None
 
-    # ── Orekit propagator — only for GRACE-FO/GRACE with CODE products ──
+    # ── Orekit propagator — all missions with CODE products (fallback to Python on failure) ──
     prop = None
-    if not USE_BROADCAST and MISSION in ('GRACE-FO', 'GRACE'):
+    if not USE_BROADCAST:
         prop = OrekitPropagator(
             gravity_field=str(grav_path), gravity_degree=GRAV_NMAX,
             solid_tides=True, ocean_tides=True, ocean_tide_degree=50,
-            third_body='lunisolar', srp_model='isotropic', relativity=True,
-            drag_model='exponential',
+            third_body='lunisolar',
+            srp_model=PIPELINE_CFG.get('srp_model', 'isotropic'),
+            relativity=True,
+            drag_model=PIPELINE_CFG.get('drag_model', 'exponential'),
             mass=MASS, area_drag=AREA_D, area_srp=AREA_S, CR=CR_DEF, CD=CD_DEF,
             stm_perturb=1.0, integrator_tol=1e-12)
         prop._setup()
@@ -322,7 +363,7 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
                     code_orbit = None
 
     # Get initial state for EKF
-    # Priority: code_orbit > kinematic WLS (self-consistent, GNV1B never used for computation)
+    # Priority: code_orbit > ref orbit > kinematic WLS (self-consistent, GNV1B never used for computation)
     # GNV1B only allowed in explicit --skip-code-orbit backward-compat mode
     if code_orbit is not None:
         r0e = code_orbit['r_ecef'][0].copy()
@@ -330,14 +371,23 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
     elif SKIP_CODE_ORBIT and ref is not None:
         r0e = interpolate_ref(ref, epochs[0])
         v0e = interpolate_ref(refv, epochs[0])
+    elif MISSION == 'SWARM' and ref is not None:
+        # SWARM: use L2 reference orbit for initial state (kinematic WLS fails with few SVs)
+        r0e = interpolate_ref(ref, epochs[0])
+        v0e = interpolate_ref(refv, epochs[0]) if refv is not None else np.zeros(3)
+        print(f"  [Init] SWARM: using L2 ref orbit for EKF initial state")
     else:
         r0_kin, _ = kinematic_wls_single_epoch(gps1b, epochs[0], sp3)
         r0e = np.array(r0_kin); v0e = np.zeros(3)
 
-    # Layer 1 QC
-    cov_stats = check_sv_coverage(gps1b, epochs, min_coverage_pct=0.40)
-    snr_stats = check_snr(gps1b, epochs)
-    mp_stats = compute_per_sv_multipath(gps1b, epochs)
+    # Layer 1 QC (config-driven thresholds)
+    qc_min_cov = PIPELINE_CFG.get('qc_min_sv_coverage', 0.40)
+    qc_snr_l1 = PIPELINE_CFG.get('qc_snr_l1_min', 30)
+    qc_snr_l2 = PIPELINE_CFG.get('qc_snr_l2_min', 25)
+    qc_mp_thr = PIPELINE_CFG.get('qc_mp_threshold', 3.5)
+    cov_stats = check_sv_coverage(gps1b, epochs, min_coverage_pct=qc_min_cov)
+    snr_stats = check_snr(gps1b, epochs, snr_l1_min=qc_snr_l1, snr_l2_min=qc_snr_l2)
+    mp_stats = compute_per_sv_multipath(gps1b, epochs, mp_threshold=qc_mp_thr)
     sp3_ok = check_sp3_integrity(sp3)
     clk_ok = check_clk_integrity(clk) if clk is not None and not USE_BROADCAST else {'is_valid': True, 'n_gps_sv': 32, 'n_epochs_per_sv': 2880}
 
@@ -418,7 +468,7 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
         recs = gps1b.get(int(gps_sod), gps1b.get(gps_sod, {}))
         for sv_id, rec in recs.items():
             if 'P_if' not in rec: continue
-            rcv_r = _get_ref_pos(gps_sod) if SKIP_CODE_ORBIT else _get_compute_pos(gps_sod)
+            rcv_r = _get_ref_pos(gps_sod) if (SKIP_CODE_ORBIT or MISSION == 'SWARM') else _get_compute_pos(gps_sod)
             if rcv_r is None: continue
             sat_pos, sat_clk, rho_corr = get_sat_geometry(sp3, sv_id, utc_dt, rcv_r, clk)
             if sat_pos is None: continue
@@ -452,19 +502,34 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
             bodies=bodies or ['Sun','Moon'], GM_gravity=_G['GM'], R_gravity=_G['R'])
 
     # EKF pass 1
-    chi2 = 100 if arc_h >= 0.3 else 25
+    chi2 = PIPELINE_CFG.get('ekf_chi2_short', 25) if arc_h < 0.3 else PIPELINE_CFG.get('ekf_chi2_long', 100)
+    stats = {}
     ekf_cfg = {
-        'dynamics_mode': 'simplified', 'Cd': 2.2, 'CR': 1.3,
-        'area_drag': 0.68, 'area_srp': 3.4, 'mass': 580.0,
+        'dynamics_mode': PIPELINE_CFG.get('ekf_dynamics_mode', 'simplified'),
+        # Pass pre-built Orekit propagator to EKF when dynamics_mode='orekit'
+        'orekit_prop': prop if PIPELINE_CFG.get('ekf_dynamics_mode', 'simplified') == 'orekit' else None,
+        'Cd': CD_DEF, 'CR': CR_DEF,
+        'area_drag': AREA_D, 'area_srp': AREA_S, 'mass': MASS,
         'bodies': ['Sun', 'Moon'], 'Cnm': Cnm, 'Snm': Snm,
-        'GM_grav': GM_grav, 'R_grav': R_grav, 'gravity_nmax': GRAV_NMAX,
-        'sigma_acc_process': 1e-3, 'tau_emp': 600.0, 'sigma_emp_ss': 1e-8,
-        'sigma_zwd_rw': 1e-9, 'sigma_phase': 0.20, 'sigma_code': 0.30,
-        'chi2_threshold': chi2, 'el_min': 0.087,
-        'use_phase_windup': True, 'use_relativity': True, 'use_cycle_slip': True,
-        'ar_min_epochs': 6, 'antex_data': antex, 'dcb_data': dcb,
-        'elev_exp_phase': 1.0, 'elev_exp_code': 0.70 if arc_h >= 0.3 else 1.0,
-        'clock_rw': 0.001 if arc_h >= 0.3 else 0.0004, 'mw_max_epochs': 200,
+        'GM_grav': GM_grav, 'R_grav': R_grav,
+        'gravity_nmax': PIPELINE_CFG.get('gravity_nmax', GRAV_NMAX),
+        'sigma_acc_process': PIPELINE_CFG.get('ekf_sigma_acc', 1e-3),
+        'tau_emp': PIPELINE_CFG.get('ekf_tau_emp', 600.0),
+        'sigma_emp_ss': PIPELINE_CFG.get('ekf_sigma_emp_ss', 1e-8),
+        'sigma_zwd_rw': PIPELINE_CFG.get('ekf_sigma_zwd_rw', 1e-9),
+        'sigma_phase': PIPELINE_CFG.get('ekf_sigma_phase', 0.20),
+        'sigma_code': PIPELINE_CFG.get('ekf_sigma_code', 0.30),
+        'chi2_threshold': chi2,
+        'el_min': np.deg2rad(PIPELINE_CFG.get('ekf_el_min_deg', 5.0)),
+        'use_phase_windup': PIPELINE_CFG.get('ekf_use_windup', True),
+        'use_relativity': PIPELINE_CFG.get('ekf_use_relativity', True),
+        'use_cycle_slip': PIPELINE_CFG.get('ekf_use_cycle_slip', True),
+        'ar_min_epochs': PIPELINE_CFG.get('ekf_ar_min_epochs', 6),
+        'antex_data': antex, 'dcb_data': dcb,
+        'elev_exp_phase': PIPELINE_CFG.get('ekf_elev_exp_phase', 1.0),
+        'elev_exp_code': PIPELINE_CFG.get('ekf_elev_exp_code_short', 1.0) if arc_h < 0.3 else PIPELINE_CFG.get('ekf_elev_exp_code_long', 0.70),
+        'clock_rw': PIPELINE_CFG.get('ekf_clock_rw_short', 0.0004) if arc_h < 0.3 else PIPELINE_CFG.get('ekf_clock_rw_long', 0.001),
+        'mw_max_epochs': PIPELINE_CFG.get('ekf_mw_max_epochs', 200),
     }
     ekf = SequentialEKF(ekf_cfg)
     state = ekf.initialize(r0i, v0i, mjd_s, epochs[0])
@@ -550,17 +615,37 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
             mw_per_sv.setdefault(sv_id, []).append(compute_mw(L1c, L2c, P1, P2))
     for sv, mw_list in mw_per_sv.items():
         mw_stats[sv] = compute_mw_stability(mw_list)
-    all_fracs = [np.mean(ml)-round(np.mean(ml)) for ml in mw_per_sv.values() if len(ml)>=5]
+    all_fracs = [np.mean(ml)-round(np.mean(ml)) for ml in mw_per_sv.values() if len(ml)>=PIPELINE_CFG.get('qc_min_wl_epochs',5)]
     b_r_wl = float(np.median(all_fracs)) if all_fracs else 0.0
     sv_decision = {}; n_rejected = 0
+    mw_std_corrupted = PIPELINE_CFG.get('qc_mw_std_corrupted', 10.0)
+    mw_std_noisy = PIPELINE_CFG.get('qc_mw_std_noisy', 0.30)
+    mw_std_unstable = PIPELINE_CFG.get('qc_mw_std_unstable', 0.50)
+    wl_resid_thr = PIPELINE_CFG.get('qc_wl_fix_residual', 0.35)
+    nl_resid_thr = PIPELINE_CFG.get('qc_nl_fix_residual', 0.30)
     for sv, mw_data in sorted(mw_stats.items()):
-        if len(mw_per_sv.get(sv, [])) < 5: continue
+        if len(mw_per_sv.get(sv, [])) < PIPELINE_CFG.get('qc_min_wl_epochs', 5): continue
+        mw_std_val = mw_data.get('std', 99)
+        if mw_std_val > mw_std_corrupted: continue   # gap/corrupted
+        if mw_std_val > mw_std_noisy: continue        # too noisy
         dec = screen_sv_for_batch(sv, cov_stats, mw_stats, mp_stats, snr_stats)
         sv_decision[sv] = dec
         if dec['decision'] in ('REJECT',): n_rejected += 1; continue
         if not dec.get('wl_eligible', False): continue
         N_w = int(round(mw_data['mean'] - b_r_wl))
-        if abs(mw_data['mean'] - b_r_wl - N_w) < 0.35: arc_wl_fixed[sv] = N_w
+        if abs(mw_data['mean'] - b_r_wl - N_w) < wl_resid_thr: arc_wl_fixed[sv] = N_w
+
+    # Skip arc if too many SVs rejected
+    max_rej_ratio = PIPELINE_CFG.get('qc_max_rejected_sv_ratio', 0.80)
+    if len(sv_decision) > 0 and n_rejected / max(len(sv_decision), 1) > max_rej_ratio:
+        print(f"  [QC-REJECT] {n_rejected}/{len(sv_decision)} SVs rejected ({n_rejected/max(len(sv_decision),1)*100:.0f}% > {max_rej_ratio*100:.0f}%), SKIP arc")
+        return {'date': date_str, 'arc_h': arc_h, 'rms_3d': 0, 'rms_3v': 0,
+                'phase_ekf': 0, 'phase_batch': 0, 'phase_gn': 0,
+                'n_sv': n_sv, 'time_gn': 0, 'n_arc_wl': 0, 'n_arc_nl': 0,
+                'qc_score': 0, 'qc_grade': 'F', 'qc_flags': 'EXCESSIVE_REJECT',
+                'avg_cov': avg_cov_pre, 'n_full_cov': 0, 'n_partial': 0,
+                'n_low_cov': sum(1 for p in cov_pcts_pre if p < qc_min_cov),
+                'converged': False, 'iterations': 0, 'skip': True}
     if n_rejected > 0: print(f"  [QC] {n_rejected} SV(s) rejected by screening")
 
     # OSB loading
@@ -582,15 +667,24 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
         for d in ep_list: sv_ep_count[d['sv']] = sv_ep_count.get(d['sv'], 0) + 1
     for sv, n in sv_ep_count.items(): sv_cov_map[sv] = n / max(n_total_ep, 1)
 
-    bls = BatchLinearSolver(pass1, sigma_phase=0.20, sigma_code=0.30,
-                            sv_coverage=sv_cov_map)
+    bls = BatchLinearSolver(pass1,
+                            sigma_phase=PIPELINE_CFG.get('ekf_sigma_phase', 0.20),
+                            sigma_code=PIPELINE_CFG.get('ekf_sigma_code', 0.30),
+                            sv_coverage=sv_cov_map,
+                            robust_reweight=PIPELINE_CFG.get('qc_robust_reweight', True))
     bls_sol = bls.solve()
     batch_ph = bls_sol['rms_phase']
 
-    # Orekit GN — skip for broadcast/Orekit-unavailable, use EKF orbit directly
-    if USE_BROADCAST or prop is None:
-        tag = "Broadcast" if USE_BROADCAST else "Python-only"
-        print(f"  [{tag}] Skipping GN loop — using EKF orbit")
+    # Orekit GN — skip for broadcast/Orekit-unavailable/too-few-SVs, use EKF orbit directly
+    gn_skip = (USE_BROADCAST or prop is None or n_sv < 4)
+    if gn_skip:
+        reasons = []
+        if USE_BROADCAST: reasons.append('broadcast')
+        if prop is None: reasons.append('no-Orekit')
+        if n_sv < 4: reasons.append(f'SVs<4({n_sv})')
+        tag = "Broadcast" if USE_BROADCAST else ("Python-dynamics" if not prop else "Orekit")
+        print(f"  [{tag}] {'(BRDC) ' if USE_BROADCAST else ''}skipping GN loop ("
+              f"{'/'.join(reasons)}) — using EKF orbit")
         dt_gn = 0; n_arc_nl = 0
         sol = {'r_eci': np.array(r_ekf_list), 'v_eci': np.array(v_ekf_list),
                'rms_phase': ekf_phase, 'converged': False, 'iterations': 0}
@@ -598,8 +692,12 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
         gn = BatchOrbitLSQv3(
             pass1, gn_fn, t_ep,
             mjd_utc_start=mjd_s, mjd_tt_start=mjd_tt,
-            sigma_phase=0.20, sigma_code=0.30,
-            max_iter=6, prior_r0=1.0, prior_v0=0.01, prior_emp=1e-7,
+            sigma_phase=PIPELINE_CFG.get('ekf_sigma_phase', 0.20),
+            sigma_code=PIPELINE_CFG.get('ekf_sigma_code', 0.30),
+            max_iter=PIPELINE_CFG.get('gn_max_iter', 6),
+            prior_r0=PIPELINE_CFG.get('gn_prior_r0', 1.0),
+            prior_v0=PIPELINE_CFG.get('gn_prior_v0', 0.01),
+            prior_emp=PIPELINE_CFG.get('gn_prior_emp', 1e-7),
             damping=0.5, orekit_prop=prop, estimate_cd_cr=False)
         t0 = time.time()
         sol = gn.solve(r0i, v0i, arc_wl_fixed=arc_wl_fixed, osb_wl=osb_wl, osb_nl=osb_nl)

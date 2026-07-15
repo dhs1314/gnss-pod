@@ -308,7 +308,7 @@ class OrekitPropagator:
                 pass
 
         # 5. Solar radiation pressure (Orekit v13: needs RadiationSensitive spacecraft)
-        if self.srp_model:
+        if self.srp_model and self.srp_model != 'none':
             try:
                 from org.orekit.forces.radiation import SolarRadiationPressure
                 from org.orekit.forces.radiation import IsotropicRadiationSingleCoefficient

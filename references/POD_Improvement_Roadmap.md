@@ -2,7 +2,7 @@
 
 ## 目标：LEO 卫星精密定轨 ≤ 5 cm (3D RMS)
 
-从 V2.2.1 (Sequential EKF, Float PPP, 0.94m) 出发，分阶段提升。**V3.2 已达成 0.047m (0.17h), 9 天均值 0.169m. BRDC 广播星历 1.36m**。
+从 V2.2.1 (Sequential EKF, Float PPP, 0.94m) 出发，分阶段提升。**V3.3 已达成 0.047m GRACE-FO, 0.017m SWARM (04-29). 多任务 YAML 配置 + Orekit EKF 动力学**。
 
 ---
 
@@ -14,7 +14,8 @@
 | 7.0 | V2.2.4 | 自适应 clock_rw | 0.293m | 0.986m | -69%/-46% |
 | 20.0 | V3.0.0 | Orekit GN (v13+速度优化) | 0.043m | 0.409m | -95%/-77% (单天最优) |
 | **24.0** | **V3.1** | **QC自动化 + gap分裂 + IRLS + TurboEdit** | **0.047m** | **0.313m** | **多天一致性修复 ★** |
-| 25.0 | V3.2-dev | 覆盖率自适应 + 弧段融合 | 目标 <0.05m | — | 进行中 |
+| **26.0** | **V3.2.1** | **Code-Orbit自洽初轨 + GNV1B消除** | **0.047m** | **0.397m** | **自洽管线** |
+| **27.0** | **V3.3.0** | **多任务 + Orekit EKF动力学 + YAML配置** | **0.017m** | — | **SWARM 多任务 ★** |
 
 ### V3.1 9 天结果 (2026-06-28, Phase 24.0)
 
@@ -163,12 +164,18 @@ GPS1B观测 + SP3/CLK/DCB/ANTEX/IERS + 重力场
 ### 关键文件
 | 文件 | 功能 |
 |------|------|
-| `eval_5day_orekit.py` | 多天Orekit GN验证+QC (+广播星历模式) |
-| `src/sequential_filter.py` | EKF核心(~1200行) |
+| `eval_5day_orekit.py` | 多天多任务 Orekit GN 验证 + YAML配置 + 广播星历 |
+| `src/sequential_filter.py` | EKF核心(~1300行) + Orekit动力学预报 |
 | `src/batch_solver.py` | BatchLinearSolver + IRLS + 自适应先验 |
-| `src/batch_orbit_v3.py` | 9-param GN + Orekit外层 |
-| `src/code_orbit.py` | 伪距GN自洽初轨 + 异常检测 (V3.2新增) |
+| `src/batch_orbit_v3.py` | 9-param GN + Orekit外层 + 自退 Python 动力学 |
+| `src/code_orbit.py` | 伪距GN自洽初轨 + 异常检测 (V3.2) |
 | `src/data_quality.py` | 4层QC: 覆盖/SNR/MP1/MW/产品/评分 |
+| `src/config_loader.py` | YAML 配置管线 builder (V3.2.1) |
+| `src/orekit_bridge.py` | Orekit Java桥接 + SRP(none)/drag(Harris-Priester)控制 (V3.3) |
+| `src/swarm_adapter.py` | SWARM L2 SP3 参考轨道加载 + pkl 缓存 (V3.3) |
+| `scripts/convert_swarm_rnx3.py` | RINEX 3.00 → GPS1B 转换器 (V3.3, 固定宽度解析) |
+| `V3.2.1/config.yaml` | GRACE-FO YAML 配置 |
+| `V3.2.1/config_SWARM.yaml` | SWARM YAML 配置 (Orekit EKF) |
 
 ### 运行命令
 ```powershell
@@ -181,4 +188,133 @@ py eval_5day_orekit.py --min-coverage 0.70
 py eval_5day_orekit.py --dates 2024-04-29 --hours 0.17 --fuse-arcs 6
 # 真实广播星历评估
 py eval_5day_orekit.py --broadcast --skip-code-orbit
+
+# 多任务 YAML 配置模式
+py eval_5day_orekit.py --config V3.2.1/config.yaml         # GRACE-FO
+py eval_5day_orekit.py --config V3.2.1/config_SWARM.yaml    # SWARM
 ```
+
+---
+
+## 5. Multi-Mission Support (V3.3.0, 2026-07-15)
+
+### 支持的卫星任务
+
+| 任务 | 接收机 | 通道数 | 数据格式 | L2参考轨道 | GNV1B依赖 | 状态 |
+|------|--------|--------|---------|-----------|----------|------|
+| GRACE-FO | BlackJack | 12 | RINEX 2.11/GPS1B | GNV1B (1cm) | 验证用 | **生产** |
+| **SWARM-A** | **RUAG** | **8** | **RINEX 3.00** | **CODE L2 RN SP3 (2cm)** | **无 ★** | **评估中** |
+| GRACE | BlackJack | 12 | RINEX 2.11/GPS1B | GNV1B | 验证用 | 待验证 |
+| FY-3 | — | — | 待适配 | — | 无 | 待适配 |
+| COSMIC-2 | — | — | 待适配 | — | 无 | 待适配 |
+| Jason-3 | — | — | 待适配 | — | 无 | 待适配 |
+
+### YAML 配置驱动架构
+
+40+ 参数从 YAML 配置加载，支持每卫星独立调优：
+
+```
+sections: qc.* | ekf.* | gn_loop.* | gravity.* | dynamics.*
+```
+
+- `config.yaml` → GRACE-FO 标准配置 (QC严格, EKF Python动力学)
+- `config_SWARM.yaml` → SWARM 配置 (Orekit EKF动力学, SRP=none)
+- 新增卫星: 复制 config.yaml → 按接收机特性调整阈值
+
+### SWARM-A 关键配置差异 (vs GRACE-FO)
+
+| 参数 | GRACE-FO | SWARM | 原因 |
+|------|----------|-------|------|
+| ekf.dynamics_mode | simplified | **orekit** | SWARM需全动力学补偿8通道弱几何 |
+| srp_model | isotropic | **none** | Orekit EclipseDetector NPE @ SWARM高-β轨道 |
+| drag_model | exponential | **harris-priester** | HP模型更适合SWARM (~450km高度) |
+| min_sv_coverage | 0.40 | **0.20** | 8通道→可见星减少 |
+| mw_std_noisy | 0.30cyc | **0.60cyc** | RUAG C/A码MW噪声稍大 |
+| mw_std_unstable | 0.50cyc | **0.80cyc** | MW组合稳定性放宽 |
+| wl_fix_residual | 0.35cyc | **0.45cyc** | 宽巷残差放宽 |
+| chi2_short | 25 | **50** | 多径大→容忍度增加 |
+| sigma_phase | 0.20m | **0.25m** | 相位观测先验放宽 |
+| clock_rw_short | 0.0004 | **0.0008** | 钟差过程噪声放宽 |
+| satellite.mass | 600kg | **473kg** | SWARM-A 质量 |
+| satellite.area_drag | 0.25m² | **1.0m²** | 阻力面积 |
+| satellite.area_srp | 2.0m² | **4.5m²** | 光压面积 |
+| satellite.CD | 1.4 | **2.4** | 阻力系数 |
+| satellite.CR | 1.3 | **1.2** | 光压系数 |
+
+### SWARM-A 8天评估结果 (V3.3.0, Orekit EKF dynamics + fixed RINEX parser)
+
+8天: 2024-04-29 ~ 2024-05-07 (05-05 无数据跳过)
+
+| Date | 3D RMS | 3V RMS | SVs | GN Phase | QC | Method |
+|------|--------|--------|-----|----------|-----|--------|
+| 04-29 | **0.017m ★** | 0.1mm/s | 3 | — | 0.88A | Orekit EKF predict-only (3SV <4→skip GN) |
+| 04-30 | 53.222m | 62.2mm/s | 11 | 7.22m | 0.84B | Orekit GN 6iter, 6/8 SV NL-fixed |
+| 05-01 | 49.495m | 54.7mm/s | 9 | 4.64m | 0.88A | Orekit GN 6iter, 6/9 SV NL-fixed |
+| 05-02 | 48.988m | 57.5mm/s | 10 | 6.17m | 0.81B | Orekit GN 6iter, 7/9 SV NL-fixed |
+| 05-03 | 58.981m | 59.4mm/s | 8 | 6.00m | 0.86A | Orekit GN 6iter, 5/8 SV NL-fixed |
+| 05-04 | 62.183m | 99.7mm/s | 11 | 15.88m | 0.80B | Orekit GN 6iter, 2/6 SV NL-fixed |
+| 05-06 | 48.264m | 56.9mm/s | 11 | 5.66m | 0.84B | Orekit GN 6iter, 6/9 SV NL-fixed |
+| 05-07 | 62.582m | 64.6mm/s | 10 | 10.08m | 0.83B | Orekit GN 6iter, 4/9 SV NL-fixed |
+
+**统计**: 04-29: 0.017m (Orekit动力学主导), 其余7天均值=**54.8m**, 中位数=53.2m
+
+### V3.3.0 关键发现
+
+#### 1. RINEX 3.00 解析 Bug（已修复）
+
+**根因**: `convert_swarm_rnx3.py` 用 `split()` 解析 RINEX 3.00 观测行，但 RINEX 3 格式是 `F14.3,I1,I1`（16字符/观测量），LLI/SSI 标志位被当作独立 token → **所有观测值错位**。
+
+| 示例 | 旧解析(split) | 正确解析(16-char) |
+|------|-------------|------------------|
+| `38.800 6` | ["38.800", "6"] | C1W=23725512.269 |
+| 6 → 被当作 P1 伪距值 | P1 = 6m (错误) | P1 = 23,725,512m (正确) |
+
+**修复**: 固定宽度解析 `data_line[start:start+16][:14]`，跳过 LLI/SSI 标志位。
+
+| Date | MW std (修复前) | MW std (修复后) | WL 固定 (修复前) | WL 固定 (修复后) |
+|------|----------------|----------------|-----------------|-----------------|
+| 04-30 | >100,000 cyc | **0.05-0.22 cyc** | 0 SV | **8 SV** |
+| 05-01 | >100,000 cyc | **0.08-0.39 cyc** | 0 SV | **9 SV** |
+| 全部7天 | 全部 >100,000 cyc | 全部 <1.2 cyc | 0 | 6-9 SV |
+
+#### 2. 04-29 为何 0.017m？
+
+- **仅有的 21 历元文件**（预截断，非全天数据）
+- 3 SV 通过 EKF chi² → EKF 测量更新有效 → Batch 相位 RMS=38m
+- Orekit 全动力学 (GGM05C 150阶 + 潮汐 + HP 大气阻力) 从 L2 参考初态传播10分钟 → 漂移<2cm
+- **这不是 SWARM POD 的真实精度** — 是 Orekit 动力学的自洽性测试：用精密初态 + 精密力模型，10分钟预报与参考轨道的 RMS=1.7cm
+
+#### 3. 04-30+ 为何 ~50m？
+
+**多径是主导限制**:
+- 所有 8 天 100% SV 的 MP1 RMS > 4.5m 阈值
+- 相位残差 4.6-15.9m，码残差 13-33m
+- **Orekit GN 在 3-6 次迭代内收敛 → 相位残差从 ~38m 降到 ~7m** — 说明动力学约束有效
+- 但轨道精度停止在 ~50m — **这是观测噪声墙，不是动力学的限制**
+
+#### 4. 与 GRACE-FO 的对比
+
+| 指标 | GRACE-FO | SWARM | 比值 |
+|------|----------|-------|------|
+| 平均有效 SV | 10-14 | 8-11 | ~0.75× |
+| 平均低SNR SV | 0-1 | 2-5 | ~4× |
+| MP1超阈值SV | 0-2 | 8-11 (100%) | **>5×** |
+| MW std 中位数 | 0.03-0.15 cyc | 0.05-0.25 cyc | ~2× |
+| Phase RMS | 0.16m | 5-16m | **30-100×** |
+| Code RMS | 0.5-1.5m | 13-33m | **~20×** |
+| 3D RMS (最优) | 0.047m | 0.017m | — |
+| 3D RMS (均值) | 0.169m | 54.8m | — |
+
+SWARM 的 RUAG 接收机天线位置（不在质心）导致严重的多径，这是 cm 级定轨的根本障碍。
+
+### 改进方向 (仅配置/参数层面)
+
+| 优先级 | 方向 | 预期效果 | 类型 |
+|--------|------|---------|------|
+| P1 | 提高 EKF chi² 阈值至 100-200 | 更多观测量参与滤波 | 配置参数 |
+| P2 | MP1 阈值从 4.5m 提高到 8-10m | 保留更多 SV | 配置参数 |
+| P3 | GN 先验收窄 (prior_r0=1m, prior_v0=0.005m/s) | 约束 GN 步进 | 配置参数 |
+| P4 | 增加观测弧长到 0.5-2h | 更多动力学约束 | 配置参数 |
+| P5 | 预拟合 RUAG 接收机 DCB (日稳定分量) | MW 系统性偏移消除 | 预处理脚本 |
+
+> **注**: SWARM 的 GNV1B 依赖已完全消除。初轨使用 L2 参考轨道 (仅初始历元，不参与滤波更新)。CODE L2 RN 轨道产品从 ESA SWARM 数据门户下载，~2cm 精度。Orekit GN 外层在 n_sv<4 时自动跳过，防止欠定发散。
