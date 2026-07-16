@@ -93,6 +93,8 @@ def build_pipeline_config(cfg):
         'ekf_elev_exp_code_long': get_cfg_param(cfg, 'ekf', 'elev_exp_code_long', default=0.70),
         'ekf_ar_min_epochs':     get_cfg_param(cfg, 'ekf', 'ar_min_epochs', default=6),
         'ekf_mw_max_epochs':     get_cfg_param(cfg, 'ekf', 'mw_max_epochs', default=200),
+        'ekf_predict_only':     get_cfg_param(cfg, 'ekf', 'predict_only', default=False),
+        'ekf_geo_from_orbit':   get_cfg_param(cfg, 'ekf', 'geo_from_orbit', default=False),
         'ekf_use_windup':        get_cfg_param(cfg, 'ekf', 'use_phase_windup', default=True),
         'ekf_use_relativity':    get_cfg_param(cfg, 'ekf', 'use_relativity', default=True),
         'ekf_use_cycle_slip':    get_cfg_param(cfg, 'ekf', 'use_cycle_slip', default=True),

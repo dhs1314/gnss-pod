@@ -537,8 +537,11 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
     state = ekf.initialize(r0i, v0i, mjd_s, epochs[0])
     pass1 = []; r_ekf_list = []; v_ekf_list = []
     ekf_predict_only = PIPELINE_CFG.get('ekf_predict_only', False)
+    ekf_geo_from_orbit = PIPELINE_CFG.get('ekf_geo_from_orbit', False)
     if ekf_predict_only:
         print(f"  [EKF] predict-only mode: Orekit dynamics, no measurement updates")
+    if ekf_geo_from_orbit:
+        print(f"  [EKF] geo-from-orbit: building pass1 from clean EKF orbit (no measurement updates)")
     # SWARM receiver antenna PCO → apply to CoM to get APC for geometry computation
     use_pco = (PCO_BODY is not None)
     if use_pco:
@@ -553,27 +556,46 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
         rcv_e = (rcv_e_com + compute_receiver_pco_ecef(rcv_e_com, v_ecef, PCO_BODY)
                  if use_pco else rcv_e_com)
 
-        # SWARM predict-only: Orekit dynamics is accurate to ~2cm over 10min.
-        # Multipath-dominated measurements pull the state AWAY from truth.
-        # Skip measurement update entirely, keep pure dynamics prediction.
+        # Always collect the clean EKF orbit
+        r_ekf_list.append(state.r_eci.copy()); v_ekf_list.append(state.v_eci.copy())
+
+        # Geo-from-orbit: compute geometry from clean predict-only orbit,
+        # but skip EKF measurement update. This gives GN loop a clean starting
+        # point with proper observation model geometry.
+        if ekf_geo_from_orbit:
+            ep_data = compute_epoch_geometry(gps_sod, gps1b, sp3, rcv_e, clk)
+            if ep_data:
+                lat = np.arcsin(rcv_e_com[2] / max(np.linalg.norm(rcv_e_com), 1e-6))
+                h = np.linalg.norm(rcv_e_com) - 6378137.0; zhd = saastamoinen_zhd(lat, h)
+                for d in ep_data:
+                    se = np.asarray(d['sat_pos'], dtype=float)
+                    sc = float(d.get('sat_clk', 0)); el = float(d.get('el', 0.5))
+                    rho = np.linalg.norm(se - rcv_e)
+                    sag = (OM / C_L) * (se[0]*rcv_e[1] - se[1]*rcv_e[0])
+                    mf = 1.001 / np.sqrt(0.002001 + np.sin(el)**2)
+                    dcb_c = compute_dcb_if_correction(dcb, d['sv'])
+                    d['_geo_full'] = rho + sag - sc + zhd * mf
+                    d['_obs_code'] = float(d.get('P_if_raw', 0)) + dcb_c - sv_bias.get(d['sv'], 0.0)
+                    d['_obs_phase'] = float(d.get('L_if_raw', 0)) - sv_bias.get(d['sv'], 0.0)
+                pass1.append(ep_data)
+            continue
+
+        # SWARM predict-only: skip measurement updates entirely
         if ekf_predict_only:
-            r_ekf_list.append(state.r_eci.copy()); v_ekf_list.append(state.v_eci.copy())
             continue
 
         ep_data = compute_epoch_geometry(gps_sod, gps1b, sp3, rcv_e, clk)
         if not ep_data:
-            r_ekf_list.append(state.r_eci.copy()); v_ekf_list.append(state.v_eci.copy())
             continue
         # Filter code-level outliers detected in Step 1
         if code_bad_svs:
             ep_data = [d for d in ep_data if d['sv'] not in code_bad_svs]
         if not ep_data:
-            r_ekf_list.append(state.r_eci.copy()); v_ekf_list.append(state.v_eci.copy())
             continue
         state, stats = ekf.process_epoch(state, ep_data, sp3, sv_bias, sv_bias_ref,
                                           mjd_u, mjd_u + 69.184 / SEC, 120)
-        lat = np.arcsin(rcv_e[2] / np.linalg.norm(rcv_e))
-        h = np.linalg.norm(rcv_e) - 6378137.0; zhd = saastamoinen_zhd(lat, h)
+        lat = np.arcsin(rcv_e_com[2] / max(np.linalg.norm(rcv_e_com), 1e-6))
+        h = np.linalg.norm(rcv_e_com) - 6378137.0; zhd = saastamoinen_zhd(lat, h)
         for d in ep_data:
             se = np.asarray(d['sat_pos'], dtype=float)
             sc = float(d.get('sat_clk', 0)); el = float(d.get('el', 0.5))
@@ -585,14 +607,19 @@ def run_one_arc(date_str, arc_h, arc_offset=0.0):
             d['_obs_code'] = float(d.get('P_if_raw', 0)) + dcb_c - sv_bias.get(d['sv'], 0.0)
             d['_obs_phase'] = float(d.get('L_if_raw', 0)) - sv_bias.get(d['sv'], 0.0)
         pass1.append(ep_data)
-        r_ekf_list.append(state.r_eci.copy())
-        v_ekf_list.append(state.v_eci.copy())
 
     ekf_phase = stats.get('rms_phase', 0)
     n_sv = state.n_sv
+    # When geo_from_orbit: count SVs from pass1 geometry, not EKF state
+    if ekf_geo_from_orbit and n_sv == 0:
+        sv_in_pass1 = set()
+        for ep_list in pass1:
+            for d in ep_list: sv_in_pass1.add(d['sv'])
+        n_sv = len(sv_in_pass1)
 
     # ── Predict-only fast path: skip batch/GN, use EKF dynamics orbit directly ──
-    if ekf_predict_only:
+    # When geo_from_orbit: pass1 is already built from clean orbit → proceed to batch/GN
+    if ekf_predict_only and not ekf_geo_from_orbit:
         print(f"  [PredictOnly] using Orekit dynamics orbit (no batch/GN)")
         sol = {'r_eci': np.array(r_ekf_list), 'v_eci': np.array(v_ekf_list),
                'rms_phase': 0, 'converged': True, 'iterations': 0}
