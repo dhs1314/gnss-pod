@@ -9,3 +9,6 @@ data/
 .idea/
 .vscode/
 *.log
+
+# Reference papers / non-code artifacts (kept out of public repo)
+*.pdf
